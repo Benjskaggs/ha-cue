@@ -1,0 +1,125 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add an Apple TV running Cue",
+        "description": "Open Cue on the Apple TV and turn on Settings › Connection › Home Assistant Control. Its address is shown there.",
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        },
+        "data_description": {
+          "host": "The Apple TV's IP address or hostname.",
+          "port": "Cue's Control API port. Leave it at 7788."
+        }
+      },
+      "token": {
+        "title": "Token for {name}",
+        "description": "Paste the token from Cue › Settings › Connection › Home Assistant Control (Generate Token). Case and dashes don't matter.",
+        "data": {
+          "token": "Token"
+        }
+      },
+      "reauth_confirm": {
+        "title": "New token for {name}",
+        "description": "Cue refused the saved token, so Home Assistant stopped asking (wrong tokens lock this address out for 5 minutes). Paste the current token from Cue › Settings › Connection.",
+        "data": {
+          "token": "Token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Couldn't reach the Apple TV. Open Cue on the Apple TV, with Home Assistant Control on, and check the address.",
+      "invalid_auth": "Cue refused that token. Check it in Cue › Settings › Connection.",
+      "not_lan": "Cue only answers devices on its local network, and this Home Assistant isn't on it (or reaches it through a public or global IPv6 address).",
+      "disabled": "Home Assistant Control is turned off on this Apple TV. Turn it on in Cue › Settings › Connection.",
+      "signed_out": "Cue is signed out of Plex on this Apple TV.",
+      "rate_limited": "Too many wrong tokens from this address. Cue will accept tries again in {retry_after} s.",
+      "not_cue": "Something answered at that address, but it isn't Cue's Control API v1.",
+      "unknown": "Unexpected error. Check the logs."
+    },
+    "abort": {
+      "already_configured": "This Apple TV is already set up.",
+      "reauth_successful": "Token updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cue options",
+        "data": {
+          "scan_interval": "Poll interval",
+          "apple_tv_entity": "Linked Apple TV media player"
+        },
+        "data_description": {
+          "scan_interval": "How often to ask Cue what's playing.",
+          "apple_tv_entity": "This Apple TV's entity from Home Assistant's Apple TV integration. Needed to start Cue when it isn't open, and for Play Media."
+        }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cue_open": {
+        "name": "Cue open"
+      }
+    },
+    "button": {
+      "skip_intro": {
+        "name": "Skip intro"
+      },
+      "skip_credits": {
+        "name": "Skip credits"
+      },
+      "restart": {
+        "name": "Restart"
+      }
+    },
+    "select": {
+      "subtitles": {
+        "name": "Subtitles"
+      },
+      "audio": {
+        "name": "Audio track"
+      },
+      "speed": {
+        "name": "Speed"
+      }
+    }
+  },
+  "exceptions": {
+    "not_open": {
+      "message": "Cue isn't open on the Apple TV."
+    },
+    "auth_failed": {
+      "message": "Cue refused the token. Re-authenticate the Cue integration with the current token."
+    },
+    "rate_limited": {
+      "message": "Cue is refusing this address for {retry_after} s after too many wrong tokens."
+    },
+    "command_failed": {
+      "message": "Cue couldn't {command}: {message} ({code})."
+    },
+    "unknown_option": {
+      "message": "{option} isn't one of the options."
+    },
+    "bad_media_id": {
+      "message": "{media_id} isn't a Plex rating key (digits, optionally prefixed by the server id and a colon)."
+    },
+    "no_apple_tv": {
+      "message": "Play Media needs a linked Apple TV media player. Set it in the Cue integration's options."
+    },
+    "apple_tv_missing": {
+      "message": "The linked Apple TV media player {entity_id} doesn't exist."
+    },
+    "wake_failed": {
+      "message": "{entity_id} didn't wake up."
+    },
+    "launch_failed": {
+      "message": "Cue didn't come to the front on {entity_id}."
+    },
+    "play_not_started": {
+      "message": "Sent {url} to Cue, but it didn't start playing within {seconds} s."
+    }
+  }
+}

@@ -1,0 +1,582 @@
+openapi: 3.1.0
+info:
+  title: Cue Control API
+  version: "1.0.0"
+  summary: Read and drive Cue's player on an Apple TV from your home network.
+  description: |
+    Cue for Apple TV can listen on your local network so Home Assistant (or any
+    script) can see what is playing and control playback. In the app it is
+    called **Home Assistant Control** (Settings › Connection).
+
+    - **Plain HTTP on your LAN, port 7788.** Requests from non-private
+      addresses are refused (403 `not_lan`). Never port-forward it.
+    - **Cue must be open.** tvOS suspends Cue soon after it leaves the
+      foreground; a refused connection means "Cue isn't open".
+    - **One request per connection**; the server closes after each reply.
+    - **Auth:** `Authorization: Bearer <token>` on everything except
+      `GET /v1/info`. The token is never accepted in a query string. Generate
+      one in Settings (`K7QM-2XRA-…`; case and dashes don't matter) or type
+      your own.
+    - **Limits:** 8 KB of headers, 16 KB of body, `Content-Length` only (no
+      chunked bodies), 5 s to send the headers, 10 s per request, 16 open
+      connections. 10 wrong tokens in a minute from one address lock it out
+      for 5 minutes (429 `rate_limited` with `Retry-After`).
+    - **No CORS headers**: browsers on the LAN can't read replies.
+
+    This file is the source of truth for v1. Routes are added spec-first; the
+    route table in `Cue/Features/Control/HTTP/ControlRouter.swift`
+    (`ControlRouter.allV1`) must list exactly the `/v1` paths here.
+
+    The unversioned routes (`/status`, `/play`, …) are the frozen 1.0
+    interface, documented under the `legacy` tag. They keep working
+    unchanged until every client has moved to v1.
+servers:
+  - url: http://{appleTV}:7788
+    variables:
+      appleTV:
+        default: apple-tv.local
+        description: The Apple TV's address (Settings › Connection › Status shows it).
+security:
+  - bearer: []
+tags:
+  - name: discovery
+  - name: status
+  - name: player
+  - name: legacy
+    description: |
+      The 1.0 interface, frozen. Parameters may come from the query string or
+      a JSON body (body wins), numbers may be strings, and errors are
+      `{"ok": false, "error": "<message>"}`. Every POST answers 409 when
+      nothing is playing. Use v1 for anything new.
+
+paths:
+  /v1/info:
+    get:
+      tags: [discovery]
+      operationId: getInfo
+      summary: Identify the Apple TV (no token needed).
+      security: []
+      responses:
+        "200":
+          description: Who this is. Says nothing about auth state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Info" }
+              example:
+                api: 1
+                name: Living Room
+                app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
+                pairing: false
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/status:
+    get:
+      tags: [status]
+      operationId: getStatus
+      summary: What is playing right now.
+      responses:
+        "200":
+          description: The current status. `player` is `null` when nothing is playing.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+              examples:
+                idle:
+                  value:
+                    api: 1
+                    app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
+                    player: null
+                    onstage: { enabled: false, available: true }
+                playing:
+                  value:
+                    api: 1
+                    app:
+                      version: "1.1"
+                      build: "2026.1201.800"
+                      platform: tvOS
+                      server: { id: 0123abcd }
+                    player:
+                      state: playing
+                      positionMs: 1155000
+                      positionAt: "2026-12-01T20:15:03.120Z"
+                      rate: 1.0
+                      durationMs: 2583000
+                      item:
+                        ratingKey: "12345"
+                        type: episode
+                        title: Before and After
+                        year: 2009
+                        server: 0123abcd
+                        show: { title: "Grey's Anatomy", ratingKey: "100" }
+                        season: 5
+                        episode: 15
+                      subtitles:
+                        selected: "3"
+                        tracks:
+                          - { id: "3", title: English (SRT), language: en, system: false, selected: true }
+                      audio:
+                        selected: "1"
+                        tracks:
+                          - { id: "1", title: English 5.1, language: en, selected: true }
+                      markers:
+                        - { type: intro, startMs: 60000, endMs: 95000, active: false, skippable: false }
+                      queue:
+                        next: { ratingKey: "12346", title: Rise Up, season: 5, episode: 16 }
+                      zoom: fit
+                      artwork:
+                        still: /v1/artwork/still?key=12345
+                        art: /v1/artwork/art?key=12345
+                        poster: /v1/artwork/poster?key=12345
+                    onstage: { enabled: false, available: true }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/artwork/{kind}:
+    get:
+      tags: [status]
+      operationId: getArtwork
+      summary: The playing item's image, fetched from Plex by the Apple TV.
+      description: |
+        Always the item playing *now*; `key` is only a cache key for clients
+        (status hands out these paths with it filled in). The Plex server's
+        address and token never leave the Apple TV.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [still, art, poster] }
+          description: "`still`: the episode's own frame (else the background art). `art`: the show or movie background. `poster`: the show's poster."
+        - name: key
+          in: query
+          required: false
+          schema: { type: string }
+          description: Ignored by the server; a ratingKey for client-side caching.
+      responses:
+        "200":
+          description: Image bytes (usually JPEG).
+          content:
+            image/*:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+
+  # Every player command answers 200 with the status afterwards, or an error.
+  # `*commandResponses` below reuses this block (a plain YAML alias).
+  /v1/player/play:
+    post:
+      tags: [player]
+      operationId: play
+      summary: Resume playback.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: &commandResponses
+        "200":
+          description: The status after the command.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Status" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/player/pause:
+    post:
+      tags: [player]
+      operationId: pause
+      summary: Pause.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: *commandResponses
+  /v1/player/toggle:
+    post:
+      tags: [player]
+      operationId: toggle
+      summary: Pause if playing, else play.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: *commandResponses
+  /v1/player/restart:
+    post:
+      tags: [player]
+      operationId: restart
+      summary: Seek to the start of the item.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: *commandResponses
+  /v1/player/next:
+    post:
+      tags: [player]
+      operationId: next
+      summary: Go to the next episode (409 `no_next` when there isn't one).
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: *commandResponses
+
+  /v1/player/seek:
+    post:
+      tags: [player]
+      operationId: seek
+      summary: Seek to a position, or by a delta. Clamped to the item.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [positionMs]
+                  additionalProperties: false
+                  properties: { positionMs: { type: integer, minimum: 0 } }
+                - type: object
+                  required: [deltaMs]
+                  additionalProperties: false
+                  properties: { deltaMs: { type: integer, description: Negative seeks back. } }
+            examples:
+              absolute: { value: { positionMs: 1200000 } }
+              back30: { value: { deltaMs: -30000 } }
+      responses: *commandResponses
+
+  /v1/player/rate:
+    post:
+      tags: [player]
+      operationId: rate
+      summary: Playback speed for this item only (not saved as a preference).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rate]
+              properties: { rate: { type: number, exclusiveMinimum: 0, maximum: 4 } }
+            example: { rate: 1.5 }
+      responses: *commandResponses
+
+  /v1/player/subtitles:
+    post:
+      tags: [player]
+      operationId: subtitles
+      summary: Pick a subtitle track by id, or turn subtitles off.
+      description: |
+        Track ids come from `player.subtitles.tracks` in status and are opaque.
+        `{"id": null}` or `{"enabled": false}` turns subtitles off.
+        Choosing by language arrives in a later version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [id]
+                  properties: { id: { type: [string, "null"] } }
+                - type: object
+                  required: [enabled]
+                  properties: { enabled: { type: boolean, const: false } }
+            examples:
+              track: { value: { id: "3" } }
+              off: { value: { id: null } }
+      responses: *commandResponses
+
+  /v1/player/audio:
+    post:
+      tags: [player]
+      operationId: audio
+      summary: Pick an audio track by id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties: { id: { type: string } }
+            example: { id: "1" }
+      responses: *commandResponses
+
+  /v1/player/skip:
+    post:
+      tags: [player]
+      operationId: skip
+      summary: Skip the intro or credits (409 `no_marker` when none is ahead).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [marker]
+              properties: { marker: { type: string, enum: [intro, credits] } }
+            example: { marker: intro }
+      responses: *commandResponses
+
+  # --- legacy (frozen 1.0 interface) ---------------------------------------
+
+  /status:
+    get:
+      tags: [legacy]
+      operationId: legacyStatus
+      summary: 1.0 status (also served at `/`). Untyped; see legacy-shape notes.
+      responses:
+        "200": { $ref: "#/components/responses/LegacyStatus" }
+        "401": { $ref: "#/components/responses/LegacyError" }
+        "403": { $ref: "#/components/responses/LegacyError" }
+        "429": { $ref: "#/components/responses/LegacyError" }
+        "503": { $ref: "#/components/responses/LegacyError" }
+  /:
+    get:
+      tags: [legacy]
+      operationId: legacyRoot
+      summary: Alias of `/status`.
+      responses:
+        "200": { $ref: "#/components/responses/LegacyStatus" }
+  /artwork:
+    get:
+      tags: [legacy]
+      operationId: legacyArtwork
+      summary: The playing item's image.
+      parameters:
+        - { name: kind, in: query, schema: { type: string, enum: [still, art, poster], default: still } }
+        - { name: k, in: query, schema: { type: string }, description: Client cache key; ignored. }
+      responses:
+        "200":
+          description: Image bytes.
+          content: { image/*: { schema: { type: string, format: binary } } }
+        "404": { $ref: "#/components/responses/LegacyError" }
+        "409": { $ref: "#/components/responses/LegacyError" }
+        "502": { $ref: "#/components/responses/LegacyError" }
+  /play:
+    post: { tags: [legacy], operationId: legacyPlay, responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "409": { $ref: "#/components/responses/LegacyError" } } }
+  /pause:
+    post: { tags: [legacy], operationId: legacyPause, responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "409": { $ref: "#/components/responses/LegacyError" } } }
+  /next:
+    post: { tags: [legacy], operationId: legacyNext, responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "409": { $ref: "#/components/responses/LegacyError" } } }
+  /seek:
+    post:
+      tags: [legacy]
+      operationId: legacySeek
+      summary: "`ms` | `value` | `position_ms` (query or body; strings allowed)."
+      responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "400": { $ref: "#/components/responses/LegacyError" }, "409": { $ref: "#/components/responses/LegacyError" } }
+  /rate:
+    post:
+      tags: [legacy]
+      operationId: legacyRate
+      summary: "`value` | `rate`, in (0, 4]."
+      responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "400": { $ref: "#/components/responses/LegacyError" }, "409": { $ref: "#/components/responses/LegacyError" } }
+  /subtitle:
+    post:
+      tags: [legacy]
+      operationId: legacySubtitle
+      summary: "`id` | `value`: a track id, or `off` / `none`."
+      responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "400": { $ref: "#/components/responses/LegacyError" }, "404": { $ref: "#/components/responses/LegacyError" }, "409": { $ref: "#/components/responses/LegacyError" } }
+  /audio:
+    post:
+      tags: [legacy]
+      operationId: legacyAudio
+      summary: "`id` | `value`: a track id."
+      responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "400": { $ref: "#/components/responses/LegacyError" }, "404": { $ref: "#/components/responses/LegacyError" }, "409": { $ref: "#/components/responses/LegacyError" } }
+  /skip:
+    post:
+      tags: [legacy]
+      operationId: legacySkip
+      summary: "`value` | `type` | `marker` = `intro` | `credits`."
+      responses: { "200": { $ref: "#/components/responses/LegacyStatus" }, "400": { $ref: "#/components/responses/LegacyError" }, "409": { $ref: "#/components/responses/LegacyError" } }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: The token from Settings › Connection › Home Assistant Control.
+
+  requestBodies:
+    Empty:
+      required: false
+      description: No body, or `{}`.
+      content:
+        application/json:
+          schema: { type: object, maxProperties: 0 }
+
+  responses:
+    Error:
+      description: Every non-2xx v1 reply. Framing errors (malformed request line or headers, bad `Content-Length`, `Transfer-Encoding`) use this shape on any path, legacy included.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: nothing_playing, message: Nothing is playing., status: 409 } }
+    RateLimited:
+      description: Too many wrong tokens from this address.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds until this address may try again.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LegacyStatus:
+      description: The 1.0 status dictionary (`ok`, `active`, `state`, `playing`, `ratingKey`, `title`, `positionMs`, `subtitles`, `audio`, `markers.intro|credits`, `artwork.*` as relative `/artwork?kind=` paths, `next`, …). Frozen; not typed here.
+      content:
+        application/json:
+          schema: { type: object, additionalProperties: true }
+    LegacyError:
+      description: "`{\"ok\": false, \"error\": \"<message>\"}`"
+      content:
+        application/json:
+          schema:
+            type: object
+            properties: { ok: { const: false }, error: { type: string } }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, status]
+          properties:
+            code: { $ref: "#/components/schemas/ErrorCode" }
+            message: { type: string, description: For people; don't parse it. }
+            status: { type: integer, description: The HTTP status, repeated. }
+            param: { type: string, description: "The offending field, for `invalid_parameter` (and a few others)." }
+    ErrorCode:
+      type: string
+      description: |
+        400 bad_request, invalid_parameter · 401 unauthorized · 403 not_lan ·
+        404 not_found, unknown_track · 405 method_not_allowed ·
+        409 nothing_playing, no_marker, no_next, no_previous, consent_required,
+        pairing_pending, unsupported · 413 payload_too_large ·
+        429 rate_limited · 501 not_implemented · 502 upstream ·
+        503 disabled, signed_out. Codes are only ever added.
+      enum: [bad_request, invalid_parameter, unauthorized, not_lan, not_found, unknown_track, method_not_allowed,
+             nothing_playing, no_marker, no_next, no_previous, consent_required, pairing_pending, unsupported,
+             payload_too_large, rate_limited, not_implemented, upstream, disabled, signed_out]
+
+    Info:
+      type: object
+      required: [api, name, app, pairing]
+      properties:
+        api: { type: integer, const: 1 }
+        name: { type: string, description: The Apple TV's name. }
+        app: { $ref: "#/components/schemas/AppVersion" }
+        pairing: { type: boolean, description: "false until pairing ships; use a token." }
+
+    AppVersion:
+      type: object
+      required: [version, build, platform]
+      properties:
+        version: { type: string }
+        build: { type: string }
+        platform: { type: string, enum: [tvOS] }
+
+    Status:
+      type: object
+      description: Fields are only ever added. A field Cue can't fill is omitted, never faked; `player` is always present and `null` when nothing is playing.
+      required: [api, app, player]
+      properties:
+        api: { type: integer, const: 1 }
+        app:
+          allOf:
+            - { $ref: "#/components/schemas/AppVersion" }
+            - type: object
+              properties:
+                server:
+                  type: object
+                  description: The Plex server of the playing item.
+                  required: [id]
+                  properties:
+                    id: { type: string, description: Plex machineIdentifier. }
+                    name: { type: string }
+        player:
+          oneOf:
+            - { type: "null" }
+            - { $ref: "#/components/schemas/Player" }
+        onstage:
+          type: object
+          required: [enabled, available]
+          properties:
+            enabled: { type: boolean }
+            available: { type: boolean, description: "false when on-TV consent was never answered or the region gate blocks it." }
+
+    Player:
+      type: object
+      required: [state, positionMs, positionAt, rate, durationMs, item, subtitles, audio, markers, queue, artwork]
+      properties:
+        state: { type: string, enum: [loading, playing, paused, buffering, ended, failed] }
+        positionMs: { type: integer }
+        positionAt: { type: string, format: date-time, description: "When positionMs was read; extrapolate with rate while playing." }
+        rate: { type: number }
+        durationMs: { type: integer }
+        item:
+          type: object
+          required: [ratingKey, type, title, server]
+          properties:
+            ratingKey: { type: string }
+            type: { type: string, description: "episode, movie, clip, …" }
+            title: { type: string }
+            year: { type: integer }
+            server: { type: string }
+            show:
+              type: object
+              required: [title]
+              properties: { title: { type: string }, ratingKey: { type: string } }
+            season: { type: integer }
+            episode: { type: integer }
+        subtitles: { $ref: "#/components/schemas/Tracks" }
+        audio: { $ref: "#/components/schemas/Tracks" }
+        markers:
+          type: array
+          items:
+            type: object
+            required: [type, startMs, endMs, active, skippable]
+            properties:
+              type: { type: string, enum: [intro, credits] }
+              startMs: { type: integer }
+              endMs: { type: integer }
+              active: { type: boolean }
+              skippable: { type: boolean }
+        queue:
+          type: object
+          properties:
+            previous: { $ref: "#/components/schemas/QueueItem" }
+            next: { $ref: "#/components/schemas/QueueItem" }
+        zoom: { type: string, enum: [fit, fill, crop] }
+        artwork:
+          type: object
+          description: Paths on this server (same token). Only kinds the item has are listed.
+          properties:
+            still: { type: string }
+            art: { type: string }
+            poster: { type: string }
+
+    Tracks:
+      type: object
+      required: [tracks]
+      properties:
+        selected: { type: [string, "null"] }
+        tracks:
+          type: array
+          items:
+            type: object
+            required: [id, title, selected]
+            properties:
+              id: { type: string, description: Opaque; pass back as-is. }
+              title: { type: string }
+              language: { type: string }
+              system: { type: boolean, description: "Subtitles only: a track the system synthesizes (auto-transcription, CC)." }
+              selected: { type: boolean }
+
+    QueueItem:
+      type: object
+      required: [ratingKey, title]
+      properties:
+        ratingKey: { type: string }
+        title: { type: string }
+        season: { type: integer }
+        episode: { type: integer }

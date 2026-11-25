@@ -1,0 +1,13 @@
+{
+  "domain": "cue",
+  "name": "Cue",
+  "after_dependencies": ["apple_tv"],
+  "codeowners": ["@Benjskaggs"],
+  "config_flow": true,
+  "documentation": "https://github.com/Benjskaggs/ha-cue",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/Benjskaggs/ha-cue/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

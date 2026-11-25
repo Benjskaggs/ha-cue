@@ -240,6 +240,9 @@ async def test_late_info_needs_no_reload_for_art(
     the next poll without reloading the entry (art doesn't shape entities)."""
     from .fake_cue import DEVICE_ID
 
+    # A 1.2 build: art, but nothing new that shapes entities (a 1.2.1
+    # build's `subtitleOffset` does reload: test_late_entity_feature_reloads).
+    fake_cue.before_slice_c()
     await fake_cue.go_away()
     entry = make_entry(fake_cue, unique_id=DEVICE_ID)
     await setup_entry(hass, entry)
@@ -253,3 +256,23 @@ async def test_late_info_needs_no_reload_for_art(
     assert entry.runtime_data is coordinator  # not reloaded
     assert coordinator.info is not None
     assert "entity_picture_logo" in _attrs(hass)
+
+
+async def test_late_entity_feature_reloads(
+    freezer: FrozenDateTimeFactory, hass: HomeAssistant, fake_cue: FakeCue
+) -> None:
+    """Cue closed at setup, then a 1.2.1 build answers: `subtitleOffset`
+    adds an entity, so the entry reloads once and the number appears."""
+    from .fake_cue import DEVICE_ID
+
+    await fake_cue.go_away()
+    entry = make_entry(fake_cue, unique_id=DEVICE_ID)
+    await setup_entry(hass, entry)
+    assert hass.states.get("number.living_room_subtitle_timing") is None
+    await fake_cue.come_back()
+    fake_cue.play()
+    for _ in range(3):
+        freezer.tick(timedelta(seconds=6))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done(wait_background_tasks=True)
+    assert hass.states.get("number.living_room_subtitle_timing") is not None

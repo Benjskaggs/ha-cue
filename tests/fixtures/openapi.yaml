@@ -85,7 +85,9 @@ paths:
                 name: Living Room
                 app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
                 pairing: false
-                features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip, artwork.logo, artwork.square, colors]
+                features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip,
+                           stop, previous, subtitleOffset,
+                           artwork.logo, artwork.square, colors, subtitles.language, subtitles.enabled, audio.language, status.app]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Error" }
@@ -281,11 +283,20 @@ paths:
     post:
       tags: [player]
       operationId: subtitles
-      summary: Pick a subtitle track by id, or turn subtitles off.
+      summary: Pick a subtitle track by id or language, or turn subtitles on or off.
       description: |
-        Track ids come from `player.subtitles.tracks` in status and are opaque.
-        `{"id": null}` or `{"enabled": false}` turns subtitles off.
-        Choosing by language arrives in a later version.
+        Send exactly one of `id`, `language` or `enabled`.
+        - `id`: from `player.subtitles.tracks` in status; opaque. `null` turns
+          subtitles off.
+        - `language` (1.2.1, feature `subtitles.language`): a code or a name
+          (`en`, `eng`, `en-US`, `English`, `Deutsch`). Picks the best track in
+          that language: real tracks before system ones (CC, auto
+          transcription), and plain before "Forced" unless `forced: true`.
+          404 `unknown_track` when there's none.
+        - `enabled`: `false` turns subtitles off. `true` (1.2.1, feature
+          `subtitles.enabled`) turns them back on: the track that was last on
+          in this stream, else the one Plex marks as the default, else the
+          first real track. Nothing changes if subtitles are already on.
       requestBody:
         required: true
         content:
@@ -296,27 +307,44 @@ paths:
                   required: [id]
                   properties: { id: { type: [string, "null"] } }
                 - type: object
+                  required: [language]
+                  properties:
+                    language: { type: string, maxLength: 64 }
+                    forced: { type: boolean }
+                - type: object
                   required: [enabled]
-                  properties: { enabled: { type: boolean, const: false } }
+                  properties: { enabled: { type: boolean } }
             examples:
               track: { value: { id: "3" } }
               off: { value: { id: null } }
+              english: { value: { language: en } }
+              backOn: { value: { enabled: true } }
       responses: *commandResponses
 
   /v1/player/audio:
     post:
       tags: [player]
       operationId: audio
-      summary: Pick an audio track by id.
+      summary: Pick an audio track by id or language.
+      description: |
+        `language` (1.2.1, feature `audio.language`) takes the same forms as
+        for subtitles and picks the first track in it; 404 `unknown_track`
+        when there's none.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [id]
-              properties: { id: { type: string } }
-            example: { id: "1" }
+              oneOf:
+                - type: object
+                  required: [id]
+                  properties: { id: { type: string } }
+                - type: object
+                  required: [language]
+                  properties: { language: { type: string, maxLength: 64 } }
+            examples:
+              track: { value: { id: "1" } }
+              german: { value: { language: de } }
       responses: *commandResponses
 
   /v1/player/skip:
@@ -333,6 +361,57 @@ paths:
               required: [marker]
               properties: { marker: { type: string, enum: [intro, credits] } }
             example: { marker: intro }
+      responses: *commandResponses
+
+  /v1/player/stop:
+    post:
+      tags: [player]
+      operationId: stop
+      summary: Close the player (1.2.1).
+      description: |
+        Exactly like Menu on the remote: the resume point is saved and Cue goes
+        back to the screen the player was opened from. The reply is the status
+        at the moment of the command; the player closes a moment later, and
+        the next status has `player: null`.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: *commandResponses
+  /v1/player/previous:
+    post:
+      tags: [player]
+      operationId: previous
+      summary: Go to the previous episode (1.2.1; 409 `no_previous` when there isn't one).
+      description: The same hop as picking the episode in the player's episode row. `player.queue.previous` says whether there is one.
+      requestBody: { $ref: "#/components/requestBodies/Empty" }
+      responses: *commandResponses
+  /v1/player/subtitle-offset:
+    post:
+      tags: [player]
+      operationId: subtitleOffset
+      summary: Shift the subtitle timing (1.2.1).
+      description: |
+        Positive delays the subtitles. `offsetMs` sets it, `deltaMs` nudges it.
+        The result is clamped to ±20 s and rounded to 50 ms, like the player's
+        timing menu. Set here it applies to this stream only (it isn't saved
+        for the title); picking another track resets it to that track's own
+        delay. Status shows it as `player.subtitles.offsetMs`. 409
+        `unsupported` when subtitles are off.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [offsetMs]
+                  additionalProperties: false
+                  properties: { offsetMs: { type: integer, minimum: -20000, maximum: 20000 } }
+                - type: object
+                  required: [deltaMs]
+                  additionalProperties: false
+                  properties: { deltaMs: { type: integer, minimum: -40000, maximum: 40000 } }
+            examples:
+              later: { value: { offsetMs: 1500 } }
+              nudgeEarlier: { value: { deltaMs: -100 } }
       responses: *commandResponses
 
   # --- legacy (frozen 1.0 interface) ---------------------------------------
@@ -499,12 +578,14 @@ components:
           description: |
             One name per v1 route this build serves (`info`, `status`, `artwork`,
             `play`, `pause`, `toggle`, `restart`, `next`, `seek`, `rate`,
-            `subtitles`, `audio`, `skip`; later ones such as `stop` and
-            `previous` appear when they ship). Feature-detect on these rather
-            than on the version. Absent on builds before Slice B, which serve
-            exactly the list above. Names are only ever added. After the
-            route names come capabilities (1.2): `artwork.logo`,
-            `artwork.square` and `colors` (`player.colors` in status).
+            `subtitles`, `audio`, `skip`; 1.2.1 adds `stop`, `previous`,
+            `subtitleOffset`). Feature-detect on these rather than on the
+            version. Absent on builds before Slice B, which serve
+            `info` … `skip`. Names are only ever added. After the route names
+            come capabilities: `artwork.logo`, `artwork.square` and `colors`
+            (`player.colors` in status) in 1.2; `subtitles.language`,
+            `subtitles.enabled`, `audio.language` (the request bodies) and
+            `status.app` (`app.foreground`, `app.screen`) in 1.2.1.
 
     AppVersion:
       type: object
@@ -532,6 +613,12 @@ components:
                   properties:
                     id: { type: string, description: Plex machineIdentifier. }
                     name: { type: string }
+                foreground:
+                  type: boolean
+                  description: "1.2.1 (`status.app`). Whether Cue is the app on screen. A suspended Cue doesn't answer, so this reads false only on the way out."
+                screen:
+                  type: string
+                  description: "1.2.1 (`status.app`). `player` while a player covers the screen, else the tab: `home`, `search`, `library`, `settings`, `watchParty`, `movieNight`, `profile`. An open set; read unknown values as somewhere in Cue."
         player:
           oneOf:
             - { type: "null" }
@@ -617,6 +704,9 @@ components:
               language: { type: string }
               system: { type: boolean, description: "Subtitles only: a track the system synthesizes (auto-transcription, CC)." }
               selected: { type: boolean }
+        offsetMs:
+          type: integer
+          description: "1.2.1, subtitles only. The viewer's subtitle delay in ms (positive = later), as the timing menu shows it."
 
     QueueItem:
       type: object

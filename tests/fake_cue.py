@@ -7,10 +7,11 @@ strict pre-Slice-B one (any 10 wrong tokens a minute lock the whole address
 for 5 minutes): the worst case, so tests prove the integration never retries
 a bad token whatever build it meets.
 
-By default it's the newest build: Slice B (`/v1/info` `id` + `features`)
-plus the couch-card art (`artwork.logo`, `artwork.square`, `colors`, per
-`cue-art-contract.md` §1). `without_art()` makes it a plain Slice B build;
-`legacy()` one from before Slice B.
+By default it's the newest build: Slice B (`/v1/info` `id` + `features`),
+the couch-card art (`artwork.logo`, `artwork.square`, `colors`, per
+`cue-art-contract.md` §1) and Slice C (stop, previous, subtitle offset,
+language bodies, `status.app`). `before_slice_c()` makes it a 1.2 build;
+`without_art()` a plain Slice B build; `legacy()` one from before Slice B.
 """
 
 from __future__ import annotations
@@ -35,6 +36,10 @@ DEVICE_ID = "3f2a5c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b"
 FEATURES = ["info", "status", "artwork", "play", "pause", "toggle", "restart", "next",
             "seek", "rate", "subtitles", "audio", "skip"]
 ART_FEATURES = ["artwork.logo", "artwork.square", "colors"]
+# Slice C (1.2.1): routes, then capabilities.
+C_ROUTES = ["stop", "previous", "subtitleOffset"]
+C_CAPABILITIES = ["subtitles.language", "subtitles.enabled", "audio.language", "status.app"]
+C_FEATURES = C_ROUTES + C_CAPABILITIES
 ACCENT = "#E0A030"
 
 
@@ -50,7 +55,7 @@ def png_with_alpha(rating_key: str) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw))
             + chunk(b"IEND", b""))
 INFO = {"api": 1, "id": DEVICE_ID, "name": "Living Room", "app": APP, "pairing": False,
-        "features": FEATURES + ART_FEATURES}
+        "features": FEATURES + C_ROUTES + ART_FEATURES + C_CAPABILITIES}
 
 IDLE = {
     "api": 1,
@@ -105,7 +110,10 @@ def playing_status(rating_key: str = "12345", *, art: bool = True) -> dict[str, 
                 {"type": "intro", "startMs": 60000, "endMs": 95000, "active": False, "skippable": False},
                 {"type": "credits", "startMs": 2500000, "endMs": 2583000, "active": False, "skippable": False},
             ],
-            "queue": {"next": {"ratingKey": "12346", "title": "Rise Up", "season": 5, "episode": 16}},
+            "queue": {
+                "previous": {"ratingKey": "12344", "title": "Stairway to Heaven", "season": 5, "episode": 14},
+                "next": {"ratingKey": "12346", "title": "Rise Up", "season": 5, "episode": 16},
+            },
             "zoom": "fit",
             "artwork": {
                 "still": f"/v1/artwork/still?key={rating_key}",
@@ -137,7 +145,8 @@ def _canon(token: str) -> str:
 class FakeCue:
     """One fake Apple TV."""
 
-    COMMANDS = ("play", "pause", "toggle", "restart", "next", "seek", "rate", "subtitles", "audio", "skip")
+    COMMANDS = ("play", "pause", "toggle", "restart", "next", "seek", "rate", "subtitles", "audio", "skip",
+                "stop", "previous", "subtitle-offset")
 
     def __init__(self, extra_commands: tuple[str, ...] = ()) -> None:
         self.extra_commands = extra_commands
@@ -155,6 +164,9 @@ class FakeCue:
         self.host = "127.0.0.1"
         self.port = 0  # picked on first start()
         self.art = True
+        # Slice C state: what `status.app` and `subtitles.offsetMs` report.
+        self.foreground = True
+        self.subtitle_offset_ms = 0
         # Called inside an artwork request, before it answers (tests use it
         # to change the item mid-fetch).
         self.on_artwork: Callable[[], None] | None = None
@@ -191,15 +203,27 @@ class FakeCue:
 
     def play(self, rating_key: str = "12345") -> None:
         self.status = playing_status(rating_key, art=self.art)
+        self.subtitle_offset_ms = 0
+
+    def has(self, feature: str) -> bool:
+        return feature in self.info.get("features", FEATURES)
+
+    def drop_features(self, names: list[str]) -> None:
+        if "features" in self.info:
+            self.info["features"] = [f for f in self.info["features"] if f not in names]
+
+    def before_slice_c(self) -> None:
+        """A 1.2 build: art, but no stop/previous/offset/`status.app`."""
+        self.drop_features(C_FEATURES)
 
     def idle(self) -> None:
         self.status = copy.deepcopy(IDLE)
 
     def without_art(self) -> None:
-        """A Slice B build from before the couch-card art."""
+        """A Slice B build from before the couch-card art (and so before
+        everything after it)."""
         self.art = False
-        if "features" in self.info:
-            self.info["features"] = [f for f in self.info["features"] if f not in ART_FEATURES]
+        self.drop_features(ART_FEATURES + C_FEATURES)
         if self.player:
             self.player.pop("colors", None)
             self.player["artwork"].pop("logo", None)
@@ -271,10 +295,21 @@ class FakeCue:
     async def _info(self, request: web.Request) -> web.Response:
         return web.json_response(self.info)
 
+    def snapshot(self) -> dict[str, Any]:
+        """`self.status` as this build sends it: the Slice C fields only
+        when the build lists them."""
+        out = copy.deepcopy(self.status)
+        if self.has("status.app"):
+            out["app"]["foreground"] = self.foreground
+            out["app"]["screen"] = "player" if out["player"] else "home"
+        if self.has("subtitleOffset") and out["player"]:
+            out["player"]["subtitles"]["offsetMs"] = self.subtitle_offset_ms
+        return out
+
     async def _status(self, request: web.Request) -> web.Response:
         if self.player:
             self.player["positionAt"] = now_iso()
-        return web.json_response(self.status)
+        return web.json_response(self.snapshot())
 
     async def _artwork(self, request: web.Request) -> web.Response:
         kind = request.match_info["kind"]
@@ -308,8 +343,16 @@ class FakeCue:
             rate = body.get("rate")
             if not isinstance(rate, (int, float)) or isinstance(rate, bool) or not 0 < rate <= 4:
                 return _error(400, "invalid_parameter", "rate must be in (0, 4].")
-        if name in ("subtitles", "audio") and "id" not in body:
+        if name in ("subtitles", "audio") and not ({"id", "language", "enabled"} & body.keys()):
             return _error(400, "invalid_parameter", f"{name} needs an id.")
+        if name == "subtitle-offset":
+            if ("offsetMs" in body) == ("deltaMs" in body):
+                return _error(400, "invalid_parameter", "Send offsetMs or deltaMs.")
+            value = body.get("offsetMs", body.get("deltaMs"))
+            if not isinstance(value, int) or isinstance(value, bool) or abs(value) > 40000:
+                return _error(400, "invalid_parameter", "Whole milliseconds.")
+            if "offsetMs" in body and abs(value) > 20000:
+                return _error(400, "invalid_parameter", "offsetMs must be within 20000.")
         if name == "skip" and body.get("marker") not in ("intro", "credits"):
             return _error(400, "invalid_parameter", "marker must be intro or credits.")
         if p is None:
@@ -325,7 +368,21 @@ class FakeCue:
             p["positionMs"] = 0
         elif name == "stop":
             self.idle()
-            return web.json_response(self.status)
+            return web.json_response(self.snapshot())
+        elif name == "previous":
+            prev = p["queue"].get("previous")
+            if not prev:
+                return _error(409, "no_previous", "There's no previous episode.")
+            self.play(prev["ratingKey"])
+            p = self.player
+            p["item"].update(title=prev["title"], season=prev.get("season"), episode=prev.get("episode"))
+            p["queue"] = {}
+            p["positionMs"] = 0
+        elif name == "subtitle-offset":
+            if p["subtitles"]["selected"] is None:
+                return _error(409, "unsupported", "Subtitles are off.")
+            target = body.get("offsetMs", self.subtitle_offset_ms + body.get("deltaMs", 0))
+            self.subtitle_offset_ms = max(-20000, min(20000, round(target / 50) * 50))
         elif name == "next":
             nxt = p["queue"].get("next")
             if not nxt:
@@ -341,8 +398,17 @@ class FakeCue:
         elif name == "rate":
             p["rate"] = float(body["rate"])
         elif name in ("subtitles", "audio"):
-            wanted = body["id"]
             block = p[name]
+            if "language" in body:
+                lang = str(body["language"]).lower()[:2]
+                match = next((t for t in block["tracks"] if (t.get("language") or "")[:2] == lang), None)
+                if match is None:
+                    return _error(404, "unknown_track", f"No {body['language']} {name}.")
+                wanted = match["id"]
+            elif "enabled" in body:
+                wanted = block["selected"] or block["tracks"][0]["id"] if body["enabled"] else None
+            else:
+                wanted = body["id"]
             if wanted is None and name == "subtitles":
                 block["selected"] = None
             elif not any(t["id"] == wanted for t in block["tracks"]):
@@ -362,7 +428,7 @@ class FakeCue:
             marker["active"] = marker["skippable"] = False
 
         p["positionAt"] = now_iso()
-        return web.json_response(self.status)
+        return web.json_response(self.snapshot())
 
     def set_marker(self, kind: str, *, skippable: bool) -> None:
         for marker in self.player["markers"]:

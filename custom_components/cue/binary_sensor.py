@@ -23,7 +23,9 @@ async def async_setup_entry(
 
 class CueOpenSensor(CueEntity, BinarySensorEntity):
     """On while Cue answers on the LAN, which on tvOS means it's frontmost
-    (or was very recently: tvOS suspends it soon after it leaves)."""
+    (or was very recently: tvOS suspends it soon after it leaves). Builds
+    with `status.app` also say when they're on their way out
+    (`app.foreground: false`), which turns it off a little sooner."""
 
     _attr_translation_key = "cue_open"
 
@@ -32,6 +34,17 @@ class CueOpenSensor(CueEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        """Reachable."""
+        """Reachable, and not saying it has left the foreground."""
         data = self.coordinator.data
-        return bool(data and data.reachable)
+        if not (data and data.reachable):
+            return False
+        app = (data.status or {}).get("app")
+        return not (isinstance(app, dict) and app.get("foreground") is False)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str] | None:
+        """`screen`: what Cue shows (`player`, `home`, …), on builds that say."""
+        data = self.coordinator.data
+        app = (data.status or {}).get("app") if data and data.reachable else None
+        screen = app.get("screen") if isinstance(app, dict) else None
+        return {"screen": screen} if isinstance(screen, str) else None

@@ -6,20 +6,20 @@ Home Assistant:
 
 | Entity | What it does |
 |---|---|
-| `media_player.<tv>` | State (`playing` / `paused` / `buffering` / `idle`, and `off` when Cue isn't open), title, show, season, episode, duration, position, artwork. Play, pause, seek, next episode (only when there is one). Play Media with a Plex rating key (needs a linked Apple TV entity, below). |
+| `media_player.<tv>` | State (`playing` / `paused` / `buffering` / `idle`, and `off` when Cue isn't open), title, show, season, episode, duration, position, artwork. Play, pause, seek, next and previous episode (only when there is one), stop (closes the player, like Menu). Play Media with a Plex rating key (needs a linked Apple TV entity, below). |
 | `select.<tv>_subtitles` | Subtitle track, or Off |
 | `select.<tv>_audio_track` | Audio track |
 | `select.<tv>_speed` | Playback speed (this item only; Cue doesn't save it) |
 | `button.<tv>_skip_intro`, `button.<tv>_skip_credits` | Available only while Cue says the marker can be skipped |
 | `button.<tv>_restart` | Back to the start |
-| `binary_sensor.<tv>_cue_open` | On while Cue answers on the LAN. The best automation trigger. |
+| `number.<tv>_subtitle_timing` | Subtitle delay in seconds, ±20 (positive = later). This stream only; available while subtitles are on. Cue 1.2.1+. |
+| `binary_sensor.<tv>_cue_open` | On while Cue answers on the LAN and is on screen. The best automation trigger. Attribute `screen`: `player`, or the tab (`home`, `search`, …), on Cue 1.2.1+. |
 
 It polls (`local_polling`, every 5 s by default). It doesn't control volume:
 that belongs to your TV or soundbar.
 
-> **Status: Slice B, for testing.** The Control API is a Developer Mode
-> feature in Cue today, so this only works with a **Debug build** of Cue.
-> Pairing, search and push updates come later.
+> **Status: for testing.** Home Assistant Control is a regular setting from
+> Cue 1.2.1 (Settings › Connection); earlier App Store builds don't listen.
 
 ## Requirements
 
@@ -90,8 +90,9 @@ Assistant host (rest_commands, scripts).
 
 Cue lists what it can do in `/v1/info.features`, and the integration only
 creates what the build serves: Stop shows up once Cue serves `stop`,
-Previous once it serves `previous`. Builds that don't list features get the
-Slice A set.
+Previous once it serves `previous`, the subtitle timing number once it
+serves `subtitleOffset` (all Cue 1.2.1). Builds that don't list features get
+the Slice A set.
 
 ## Play Media
 

@@ -42,7 +42,14 @@ LEGACY_FEATURES: Final = frozenset(
 # Features (`/v1/info.features`) that decide which entities exist. Only a
 # difference here, once a closed-at-setup Cue is first heard from, is worth
 # a reload; the rest (artwork kinds, colours) are read live.
-ENTITY_FEATURES: Final = frozenset({"subtitles", "audio", "rate", "skip", "restart"})
+ENTITY_FEATURES: Final = frozenset({"subtitles", "audio", "rate", "skip", "restart", "subtitleOffset"})
+
+# Slice C (Cue 1.2.1).
+FEATURE_SUBTITLE_OFFSET: Final = "subtitleOffset"
+# `status.app.foreground` / `.screen`.
+FEATURE_APP_STATE: Final = "status.app"
+# Cue clamps the subtitle delay to this many seconds either way.
+SUBTITLE_OFFSET_LIMIT: Final = 20.0
 
 # The couch-card art (contract `cue-art-contract.md` §2): extra media player
 # attributes, each an HA-proxied URL, and the feature a build must list for

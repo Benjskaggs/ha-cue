@@ -175,7 +175,8 @@ async def test_setup_migrates_host_keyed_entry(hass: HomeAssistant, fake_cue: Fa
 
     assert entry.unique_id == DEVICE_ID
     after = _entity_unique_ids(hass, entry.entry_id)
-    assert set(after) == set(before)  # same entity ids
+    # Same entity ids, plus what the newer build adds (the 1.2.1 offset).
+    assert set(after) - set(before) == {"number.living_room_subtitle_timing"}
     assert after[PLAYER] == DEVICE_ID
     assert after["select.living_room_subtitles"] == f"{DEVICE_ID}_subtitles"
     assert after["binary_sensor.living_room_cue_open"] == f"{DEVICE_ID}_cue_open"
@@ -226,11 +227,11 @@ async def test_id_taken_by_another_entry(hass: HomeAssistant, fake_cue: FakeCue,
 
 
 async def test_features_shape_entities(hass: HomeAssistant, socket_enabled: None) -> None:
-    """A build that lists `stop` and lacks `skip` and `rate`."""
-    fake = FakeCue(extra_commands=("stop",))
+    """A build that lists `stop` and lacks `skip`, `rate` and `previous`."""
+    fake = FakeCue()
     await fake.start()
     try:
-        fake.info["features"] = [f for f in fake.info["features"] if f not in ("skip", "rate")] + ["stop"]
+        fake.info["features"] = [f for f in fake.info["features"] if f not in ("skip", "rate", "previous")]
         fake.play()
         await setup_entry(hass, make_entry(fake))
 

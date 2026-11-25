@@ -64,7 +64,12 @@
   "entity": {
     "binary_sensor": {
       "cue_open": {
-        "name": "Cue open"
+        "name": "Cue open",
+        "state_attributes": {
+          "screen": {
+            "name": "Screen"
+          }
+        }
       }
     },
     "button": {
@@ -87,6 +92,11 @@
       },
       "speed": {
         "name": "Speed"
+      }
+    },
+    "number": {
+      "subtitle_offset": {
+        "name": "Subtitle timing"
       }
     }
   },

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from homeassistant.const import CONF_HOST, CONF_PORT, CONF_SCAN_INTERVAL, CONF_TOKEN, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
 from .api import CueClient
-from .const import DEFAULT_PORT, DEFAULT_SCAN_INTERVAL
+from .const import DEFAULT_PORT, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import CueConfigEntry, CueCoordinator
 from .issues import async_delete_issues, async_sync_outdated_issue
+from .media_player import async_register_services
 from .migration import async_adopt_device_id, async_migrate_registries
 
 PLATFORMS: list[Platform] = [
@@ -18,6 +21,15 @@ PLATFORMS: list[Platform] = [
     Platform.MEDIA_PLAYER,
     Platform.SELECT,
 ]
+
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the cue.* services (they act on Cue media players)."""
+    async_register_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: CueConfigEntry) -> bool:

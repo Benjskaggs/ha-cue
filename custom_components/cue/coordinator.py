@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
@@ -27,6 +28,20 @@ from .const import DOMAIN, LEGACY_FEATURES
 _LOGGER = logging.getLogger(__name__)
 
 type CueConfigEntry = ConfigEntry[CueCoordinator]
+
+
+# Cue error codes with their own message (the rest use `command_failed`).
+ERROR_CODE_KEYS = {
+    "nothing_playing": "nothing_playing",
+    "no_marker": "no_marker",
+    "unknown_track": "unknown_track",
+    "no_next": "no_next",
+    "no_previous": "no_previous",
+}
+
+
+class _NotOpen(HomeAssistantError):
+    """Cue didn't answer: it isn't open."""
 
 
 def _now() -> float:
@@ -196,6 +211,21 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         Commands for one entry run one at a time (Cue serves one request per
         connection, 16 at most). The client gives each 5 s.
         """
+        await self._async_guarded(name, lambda: self.client.command(name, body))
+
+    async def async_read_now(self) -> None:
+        """A fresh `/v1/status`, applied at once (for `cue.get_status`).
+
+        Cue not open is not an error here: the data just goes unreachable.
+        """
+        try:
+            await self._async_guarded("status", self.client.get_status)
+        except _NotOpen:
+            return
+
+    async def _async_guarded(
+        self, name: str, request: Callable[[], Awaitable[dict[str, Any]]]
+    ) -> None:
         if self.auth_failed:
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="auth_failed"
@@ -204,11 +234,11 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
 
         async with self._command_lock:
             try:
-                status = await self.client.command(name, body)
+                status = await request()
             except CueConnectionError as err:
                 self._generation += 1
                 self.async_set_updated_data(CueData(reachable=False))
-                raise HomeAssistantError(
+                raise _NotOpen(
                     translation_domain=DOMAIN, translation_key="not_open"
                 ) from err
             except CueAuthError as err:
@@ -229,7 +259,7 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
             except CueResponseError as err:
                 raise HomeAssistantError(
                     translation_domain=DOMAIN,
-                    translation_key="command_failed",
+                    translation_key=ERROR_CODE_KEYS.get(err.code or "", "command_failed"),
                     translation_placeholders={
                         "command": name,
                         "code": err.code or str(err.status),

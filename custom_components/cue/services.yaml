@@ -1,0 +1,84 @@
+get_status:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+
+select_subtitle:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+  fields:
+    track_id:
+      example: "3"
+      selector:
+        text:
+    language:
+      example: en
+      selector:
+        text:
+    "off":
+      selector:
+        boolean:
+    return_errors:
+      default: false
+      selector:
+        boolean:
+
+select_audio:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+  fields:
+    track_id:
+      example: "1"
+      selector:
+        text:
+    language:
+      example: en
+      selector:
+        text:
+    return_errors:
+      default: false
+      selector:
+        boolean:
+
+set_rate:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+  fields:
+    rate:
+      required: true
+      example: 1.5
+      selector:
+        number:
+          min: 0.25
+          max: 4
+          step: 0.05
+          mode: box
+    return_errors:
+      default: false
+      selector:
+        boolean:
+
+skip:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+  fields:
+    marker:
+      required: true
+      selector:
+        select:
+          options:
+            - intro
+            - credits
+    return_errors:
+      default: false
+      selector:
+        boolean:

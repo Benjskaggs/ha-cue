@@ -134,9 +134,9 @@ async def test_transport_commands(hass: HomeAssistant, fake_cue: FakeCue, playin
 async def test_command_error_surfaces(hass: HomeAssistant, fake_cue: FakeCue, playing) -> None:
     """A Cue error is a HomeAssistantError carrying Cue's code; nothing is applied."""
     fake_cue.idle()  # the episode ended between polls
-    with pytest.raises(HomeAssistantError, match="nothing_playing"):
+    with pytest.raises(HomeAssistantError, match="Nothing is playing"):
         await _mp(hass, SERVICE_MEDIA_PAUSE)
-    with pytest.raises(HomeAssistantError, match="nothing_playing"):
+    with pytest.raises(HomeAssistantError, match="Nothing is playing"):
         await _press(hass, RESTART)
     # The error reply wasn't applied as status; the next poll goes idle.
     assert hass.states.get(PLAYER).state == "playing"

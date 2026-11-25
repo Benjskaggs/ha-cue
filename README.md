@@ -118,6 +118,32 @@ What happens, in this order:
    isn't connected to, which only shows its page), the action fails with an
    error. It never reports success that didn't happen.
 
+## Actions (services)
+
+All target a Cue media player. Each answers with Cue's status in the shape
+Cue's original (v0) API used: `ok`, `active`, `state`, `playing`, `title`,
+`show`, `season`, `episode`, `positionMs`, `durationMs`, `rate`,
+`subtitles` / `audio` (`selected`, `tracks[{id, title, language,
+selected}]`), `markers.intro|credits` (`startMs`, `endMs`, `active`,
+`skippable`), `hasNext`, `next`, plus `picture` (Home Assistant's image
+proxy). The response is keyed by entity id.
+
+| Action | Fields | Notes |
+|---|---|---|
+| `cue.get_status` | none | A fresh read from the Apple TV. Never fails while the entity is available: Cue closed or refusing answers `{ok: false, active: false, error}`. |
+| `cue.select_subtitle` | one of `track_id`, `language` (`en`, `eng`, `English`), `off: true` | |
+| `cue.select_audio` | one of `track_id`, `language` | |
+| `cue.set_rate` | `rate` (above 0, up to 4) | This item only. |
+| `cue.skip` | `marker`: `intro` or `credits` | |
+
+Command actions fail with a clear error (nothing playing, no marker ahead,
+no such track). Pass `return_errors: true` to get the error in the response
+instead (`ok: false`, `error`, plus the fresh status), which is what a script
+that must never stop wants. When the Cue entity is unavailable (wrong token,
+Control turned off on the TV), entity actions don't run at all and Home
+Assistant reports that no entity matched; scripts with `continue_on_error`
+get past that too.
+
 ## Troubleshooting
 
 | Message | Meaning |

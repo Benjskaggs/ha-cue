@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 import hashlib
 import logging
@@ -11,6 +11,8 @@ import re
 import time
 from typing import Any
 from urllib.parse import quote
+
+import voluptuous as vol
 
 from homeassistant.components.media_player import (
     ATTR_APP_NAME,
@@ -33,8 +35,17 @@ from homeassistant.const import (
     STATE_UNAVAILABLE,
     STATE_UNKNOWN,
 )
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    ServiceResponse,
+    State,
+    SupportsResponse,
+    callback,
+)
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import config_validation as cv, entity_platform, service as ha_service
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
@@ -42,6 +53,7 @@ from homeassistant.util import dt as dt_util
 from .const import APPLE_TV_APP_NAME, CONF_APPLE_TV_ENTITY, DOMAIN
 from .coordinator import CueConfigEntry, CueCoordinator
 from .entity import CueEntity
+from .legacy import NOT_OPEN, error_status, find_track, v0_status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,8 +95,91 @@ ROUTE_FEATURES = (
     ("stop", MediaPlayerEntityFeature.STOP),
 )
 
+# Entity services (`cue.<name>`). Each answers with Cue's status in the v0
+# shape (`legacy.v0_status`), so `script.cue_control` keeps its response.
+SERVICE_GET_STATUS = "get_status"
+SERVICE_SELECT_SUBTITLE = "select_subtitle"
+SERVICE_SELECT_AUDIO = "select_audio"
+SERVICE_SET_RATE = "set_rate"
+SERVICE_SKIP = "skip"
+ATTR_TRACK_ID = "track_id"
+ATTR_LANGUAGE = "language"
+ATTR_OFF = "off"
+ATTR_RATE = "rate"
+ATTR_MARKER = "marker"
+# True: a Cue error comes back in the response (`ok: false`, `error`) instead
+# of being raised. For scripts that must never stop on an error.
+ATTR_RETURN_ERRORS = "return_errors"
+
+_RETURN_ERRORS = {vol.Optional(ATTR_RETURN_ERRORS, default=False): cv.boolean}
+
 _RATING_KEY = re.compile(r"^\d+$")
 _SERVER_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+SERVICES: tuple[tuple[str, dict[Any, Any], str, SupportsResponse], ...] = (
+    (SERVICE_GET_STATUS, {}, "async_service_get_status", SupportsResponse.ONLY),
+    (
+        SERVICE_SELECT_SUBTITLE,
+        {
+            vol.Optional(ATTR_TRACK_ID): cv.string,
+            vol.Optional(ATTR_LANGUAGE): cv.string,
+            vol.Optional(ATTR_OFF): cv.boolean,
+            **_RETURN_ERRORS,
+        },
+        "async_service_select_subtitle",
+        SupportsResponse.OPTIONAL,
+    ),
+    (
+        SERVICE_SELECT_AUDIO,
+        {
+            vol.Optional(ATTR_TRACK_ID): cv.string,
+            vol.Optional(ATTR_LANGUAGE): cv.string,
+            **_RETURN_ERRORS,
+        },
+        "async_service_select_audio",
+        SupportsResponse.OPTIONAL,
+    ),
+    (
+        SERVICE_SET_RATE,
+        {
+            vol.Required(ATTR_RATE): vol.All(
+                vol.Coerce(float), vol.Range(min=0, min_included=False, max=4)
+            ),
+            **_RETURN_ERRORS,
+        },
+        "async_service_set_rate",
+        SupportsResponse.OPTIONAL,
+    ),
+    (
+        SERVICE_SKIP,
+        {vol.Required(ATTR_MARKER): vol.In(["intro", "credits"]), **_RETURN_ERRORS},
+        "async_service_skip",
+        SupportsResponse.OPTIONAL,
+    ),
+)
+
+HAS_PLATFORM_SERVICE_HELPER = hasattr(ha_service, "async_register_platform_entity_service")
+
+
+@callback
+def async_register_services(hass: HomeAssistant) -> None:
+    """Register the cue.* services at integration setup, so they exist even
+    while no entry is loaded (a 401 at startup): a call then fails with a
+    HomeAssistantError, which a script's continue_on_error catches, instead
+    of ServiceNotFound, which it can't."""
+    if not HAS_PLATFORM_SERVICE_HELPER:
+        return
+    for name, schema, method, response in SERVICES:
+        ha_service.async_register_platform_entity_service(
+            hass,
+            DOMAIN,
+            name,
+            entity_domain=MEDIA_PLAYER_DOMAIN,
+            schema=schema,
+            func=method,
+            supports_response=response,
+        )
 
 
 async def async_setup_entry(
@@ -92,8 +187,16 @@ async def async_setup_entry(
     entry: CueConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Add the media player."""
+    """Add the media player and the `cue.*` entity services."""
     async_add_entities([CueMediaPlayer(entry.runtime_data)])
+
+    # The cue.* services are registered once, in `async_setup`
+    # (`async_register_services`); on HA builds without the integration-level
+    # helper they're registered here instead.
+    if not HAS_PLATFORM_SERVICE_HELPER:
+        platform = entity_platform.async_get_current_platform()
+        for name, schema, method, response in SERVICES:
+            platform.async_register_entity_service(name, schema, method, supports_response=response)
 
 
 def parse_media_id(media_id: str, extra: dict[str, Any] | None) -> tuple[str, str | None]:
@@ -325,6 +428,107 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
         """Close the player (builds that list `stop`)."""
         await self.coordinator.async_command("stop")
 
+    # MARK: cue.* entity services (v0-shaped status responses)
+
+    def _v0(self) -> dict[str, Any]:
+        data = self.coordinator.data
+        if data is None or not data.reachable:
+            return error_status(NOT_OPEN)
+        return v0_status(data.status, picture=self.entity_picture)
+
+    async def async_service_get_status(self) -> ServiceResponse:
+        """`cue.get_status`: a fresh read, never an exception (an error
+        comes back as `{ok: false, active: false, error}`)."""
+        try:
+            await self.coordinator.async_read_now()
+        except HomeAssistantError as err:
+            return error_status(str(err))
+        return self._v0()
+
+    async def _async_run(self, return_errors: bool, action: Callable[[], Awaitable[None]]) -> ServiceResponse:
+        try:
+            await action()
+        except HomeAssistantError as err:
+            if not return_errors:
+                raise
+            return {**self._v0(), "ok": False, "error": str(err)}
+        return self._v0()
+
+    async def _async_tracks(self, kind: str) -> list[dict[str, Any]]:
+        """The current `kind` tracks, from a fresh read."""
+        await self.coordinator.async_read_now()
+        player = self.player
+        if player is None:
+            data = self.coordinator.data
+            key = "nothing_playing" if data and data.reachable else "not_open"
+            raise HomeAssistantError(translation_domain=DOMAIN, translation_key=key)
+        block = player.get(kind) or {}
+        return [t for t in block.get("tracks") or [] if isinstance(t, dict)]
+
+    async def _async_pick(self, kind: str, track_id: str | None, language: str | None) -> str:
+        if track_id:
+            return track_id
+        assert language is not None
+        tracks = await self._async_tracks(kind)
+        track = find_track(tracks, language)
+        if track is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="no_track_for_language",
+                translation_placeholders={
+                    "kind": "subtitle" if kind == "subtitles" else "audio",
+                    "language": language,
+                    "tracks": ", ".join(str(t.get("title")) for t in tracks) or "none",
+                },
+            )
+        return str(track["id"])
+
+    async def async_service_select_subtitle(
+        self,
+        track_id: str | None = None,
+        language: str | None = None,
+        off: bool = False,
+        return_errors: bool = False,
+    ) -> ServiceResponse:
+        """`cue.select_subtitle`: a track id, a language, or off."""
+        _require_one(track_id=track_id, language=language, off=off or None)
+
+        async def action() -> None:
+            if off:
+                await self.coordinator.async_command("subtitles", {"id": None})
+                return
+            chosen = await self._async_pick("subtitles", track_id, language)
+            await self.coordinator.async_command("subtitles", {"id": chosen})
+
+        return await self._async_run(return_errors, action)
+
+    async def async_service_select_audio(
+        self,
+        track_id: str | None = None,
+        language: str | None = None,
+        return_errors: bool = False,
+    ) -> ServiceResponse:
+        """`cue.select_audio`: a track id or a language."""
+        _require_one(track_id=track_id, language=language)
+
+        async def action() -> None:
+            chosen = await self._async_pick("audio", track_id, language)
+            await self.coordinator.async_command("audio", {"id": chosen})
+
+        return await self._async_run(return_errors, action)
+
+    async def async_service_set_rate(self, rate: float, return_errors: bool = False) -> ServiceResponse:
+        """`cue.set_rate`: speed for this item, (0, 4]."""
+        return await self._async_run(
+            return_errors, lambda: self.coordinator.async_command("rate", {"rate": rate})
+        )
+
+    async def async_service_skip(self, marker: str, return_errors: bool = False) -> ServiceResponse:
+        """`cue.skip`: past the intro or credits."""
+        return await self._async_run(
+            return_errors, lambda: self.coordinator.async_command("skip", {"marker": marker})
+        )
+
     # MARK: play_media, cold start through HA's apple_tv integration
 
     @property
@@ -476,3 +680,14 @@ async def _async_wait_for_state(
         return False
     finally:
         unsub()
+
+
+def _require_one(**choices: Any) -> None:
+    """Exactly one of the choices must be given."""
+    given = [name for name, value in choices.items() if value not in (None, "", False)]
+    if len(given) != 1:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="no_choice",
+            translation_placeholders={"fields": ", ".join(choices)},
+        )

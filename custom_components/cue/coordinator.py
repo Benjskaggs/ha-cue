@@ -38,6 +38,8 @@ ERROR_CODE_KEYS = {
     "unknown_track": "unknown_track",
     "no_next": "no_next",
     "no_previous": "no_previous",
+    "signed_out": "signed_out",
+    "not_found": "not_found",
 }
 
 
@@ -228,9 +230,20 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         except _NotOpen:
             return
 
-    async def _async_guarded(
+    async def async_library(
         self, name: str, request: Callable[[], Awaitable[dict[str, Any]]]
-    ) -> None:
+    ) -> dict[str, Any]:
+        """A search, Continue Watching or open request, with the same error
+        handling as a command. Answers Cue's reply (not a status)."""
+        return await self._async_guarded(name, request, apply=False)
+
+    async def _async_guarded(
+        self,
+        name: str,
+        request: Callable[[], Awaitable[dict[str, Any]]],
+        *,
+        apply: bool = True,
+    ) -> dict[str, Any]:
         if self.auth_failed:
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="auth_failed"
@@ -272,8 +285,10 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
                     },
                 ) from err
 
-            self._generation += 1
-            self.async_set_updated_data(CueData(reachable=True, status=status))
+            if apply:
+                self._generation += 1
+                self.async_set_updated_data(CueData(reachable=True, status=status))
+            return status
 
     async def async_get_artwork(self, path: str) -> tuple[bytes, str] | None:
         """Artwork bytes through Cue's proxy, or None (never raises)."""

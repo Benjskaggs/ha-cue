@@ -106,18 +106,39 @@ data:
   # or "0123abcd:12345" (server machineId:ratingKey), as the entity reports it
 ```
 
-What happens, in this order:
+A show (`media_content_type: tvshow`) or season carries on where you are in
+it: the half-watched episode, or the next one.
+
+**Cue open, Cue 1.2.1+:** the integration asks Cue to open the title
+(`/v1/open`), exactly like pressing Play on its page, and succeeds once Cue
+reports a player came up (within 25 s). No linked Apple TV needed. A title
+on a Plex server Cue isn't connected to fails straight away.
+
+**Cue not open (or an older Cue):** the linked Apple TV entity starts it,
+in this order:
 
 1. If the Apple TV is asleep, the linked entity turns it on.
 2. If Cue isn't the frontmost app, the linked entity selects the **Cue**
    source and waits until it reports `app_name: Cue`. (Sending a `cue://`
    link to an app that isn't on screen makes tvOS ask "Open in Cue?".)
-3. The linked entity opens `cue://play/<ratingKey>` (with `?server=` when
-   given).
+3. The linked entity opens `cue://play/<ratingKey>` (`cue://resume/…` for
+   a show, with `?server=` when given).
 4. The action only succeeds once **Cue itself** reports that item playing.
    If it doesn't within 25 s (for example the item is on a Plex server Cue
    isn't connected to, which only shows its page), the action fails with an
    error. It never reports success that didn't happen.
+
+## Search, voice and the media browser (Cue 1.2.1+)
+
+- **Search Media** (`media_player.search_media`) searches Cue's Plex library
+  for movies, shows and episodes. That's what Assist's built-in
+  "play *something* on the *TV*" (`HassMediaSearchAndPlay`) uses: it
+  searches, then plays the first result.
+- **Media browser:** Cue › Continue Watching, as on Cue's Home.
+- `cue.search` and `cue.continue_watching` answer the same lists with
+  everything an LLM tool needs (below).
+
+They answer for the Plex server Cue is connected to.
 
 ## Couch-card art (Cue 1.2+)
 
@@ -158,6 +179,8 @@ proxy). The response is keyed by entity id.
 | `cue.select_audio` | one of `track_id`, `language` | |
 | `cue.set_rate` | `rate` (above 0, up to 4) | This item only. |
 | `cue.skip` | `marker`: `intro` or `credits` | |
+| `cue.search` | `query`; optional `type` (`movie`, `show`, `episode`, a list), `limit` (1–50, default 10) | Cue 1.2.1+. `{query, results: [...]}`; never plays. Each result has Cue's fields (`ratingKey`, `type`, `title`, `year`, `show`, `season`, `episode`, `durationMs`, `viewOffsetMs`, `watched`) plus `media_content_id`, `media_content_type` (pass both to `media_player.play_media`) and `display_title`. |
+| `cue.continue_watching` | none | Cue 1.2.1+. `{items: [...]}`, same item shape. |
 
 Command actions fail with a clear error (nothing playing, no marker ahead,
 no such track). Pass `return_errors: true` to get the error in the response

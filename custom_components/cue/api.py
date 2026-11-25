@@ -14,10 +14,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import aiohttp
 
-from .const import DEFAULT_RETRY_AFTER, REQUEST_TIMEOUT
+from .const import DEFAULT_RETRY_AFTER, LIBRARY_TIMEOUT, REQUEST_TIMEOUT
 
 
 class CueError(Exception):
@@ -97,6 +98,28 @@ class CueClient:
         """`POST /v1/player/<name>`. Answers the status after the command."""
         return await self._json("POST", f"/v1/player/{name}", body=body or {})
 
+    async def search(
+        self, query: str, types: list[str] | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        """`GET /v1/search` (Cue 1.2.1). Spaces go as `%20`: Cue reads `+`
+        as a literal plus."""
+        params = {"q": query}
+        if types:
+            params["type"] = ",".join(types)
+        if limit:
+            params["limit"] = str(limit)
+        path = "/v1/search?" + urlencode(params, quote_via=quote)
+        return await self._json("GET", path, timeout=LIBRARY_TIMEOUT)
+
+    async def continue_watching(self) -> dict[str, Any]:
+        """`GET /v1/hubs/continue` (Cue 1.2.1)."""
+        return await self._json("GET", "/v1/hubs/continue", timeout=LIBRARY_TIMEOUT)
+
+    async def open(self, body: dict[str, Any]) -> dict[str, Any]:
+        """`POST /v1/open` (Cue 1.2.1): 202 `{requestId}`; the outcome is
+        `status.lastOpen`."""
+        return await self._json("POST", "/v1/open", body=body, ok=(202,), timeout=LIBRARY_TIMEOUT)
+
     async def get_artwork(self, path: str) -> tuple[bytes, str]:
         """Fetch an artwork path from status (`/v1/artwork/still?key=…`)."""
         if not path.startswith("/v1/artwork/"):
@@ -113,9 +136,11 @@ class CueClient:
         *,
         body: dict[str, Any] | None = None,
         auth: bool | None = True,
+        ok: tuple[int, ...] = (200,),
+        timeout: float = REQUEST_TIMEOUT,
     ) -> dict[str, Any]:
-        status, headers, raw = await self._request(method, path, body=body, auth=auth)
-        if status != 200:
+        status, headers, raw = await self._request(method, path, body=body, auth=auth, timeout=timeout)
+        if status not in ok:
             raise _error_for(status, headers, raw)
         try:
             data = json.loads(raw)
@@ -132,6 +157,7 @@ class CueClient:
         *,
         body: dict[str, Any] | None = None,
         auth: bool | None = True,
+        timeout: float = REQUEST_TIMEOUT,
     ) -> tuple[int, Mapping[str, str], bytes]:
         """`auth`: True requires the token, None sends it if there is one."""
         headers = {"Accept": "application/json"}
@@ -145,7 +171,7 @@ class CueClient:
                 self.base_url + path,
                 json=body if method == "POST" else None,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=timeout),
                 allow_redirects=False,
             ) as resp:
                 raw = await resp.read()

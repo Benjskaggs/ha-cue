@@ -16,6 +16,11 @@ import voluptuous as vol
 
 from homeassistant.components.media_player import (
     ATTR_APP_NAME,
+    BrowseError,
+    BrowseMedia,
+    SearchError,
+    SearchMedia,
+    SearchMediaQuery,
     ATTR_INPUT_SOURCE,
     ATTR_MEDIA_CONTENT_ID,
     ATTR_MEDIA_CONTENT_TYPE,
@@ -55,10 +60,16 @@ from .const import (
     ART_CONTENT_PREFIX,
     ART_KINDS,
     ATTR_ACCENT_COLOR,
+    BROWSE_CONTINUE,
+    BROWSE_ROOT,
     CONF_APPLE_TV_ENTITY,
     DOMAIN,
     FEATURE_COLORS,
+    FEATURE_CONTINUE,
+    FEATURE_OPEN,
+    FEATURE_SEARCH,
 )
+from . import library
 from .coordinator import CueConfigEntry, CueCoordinator
 from .entity import CueEntity
 from .legacy import NOT_OPEN, error_status, find_track, v0_status
@@ -110,6 +121,11 @@ SERVICE_SELECT_SUBTITLE = "select_subtitle"
 SERVICE_SELECT_AUDIO = "select_audio"
 SERVICE_SET_RATE = "set_rate"
 SERVICE_SKIP = "skip"
+SERVICE_SEARCH = "search"
+SERVICE_CONTINUE_WATCHING = "continue_watching"
+ATTR_QUERY = "query"
+ATTR_TYPE = "type"
+ATTR_LIMIT = "limit"
 ATTR_TRACK_ID = "track_id"
 ATTR_LANGUAGE = "language"
 ATTR_OFF = "off"
@@ -166,6 +182,17 @@ SERVICES: tuple[tuple[str, dict[Any, Any], str, SupportsResponse], ...] = (
         "async_service_skip",
         SupportsResponse.OPTIONAL,
     ),
+    (
+        SERVICE_SEARCH,
+        {
+            vol.Required(ATTR_QUERY): vol.All(cv.string, vol.Length(min=1, max=200)),
+            vol.Optional(ATTR_TYPE): vol.All(cv.ensure_list, [vol.In(["movie", "show", "episode"])]),
+            vol.Optional(ATTR_LIMIT): vol.All(vol.Coerce(int), vol.Range(min=1, max=50)),
+        },
+        "async_service_search",
+        SupportsResponse.ONLY,
+    ),
+    (SERVICE_CONTINUE_WATCHING, {}, "async_service_continue_watching", SupportsResponse.ONLY),
 )
 
 HAS_PLATFORM_SERVICE_HELPER = hasattr(ha_service, "async_register_platform_entity_service")
@@ -234,9 +261,10 @@ def parse_media_id(media_id: str, extra: dict[str, Any] | None) -> tuple[str, st
     return media_id, server or None
 
 
-def cue_play_url(rating_key: str, server: str | None) -> str:
-    """The deep link Cue's DeepLinkRouter accepts."""
-    url = f"cue://play/{rating_key}"
+def cue_play_url(rating_key: str, server: str | None, *, resume: bool = False) -> str:
+    """The deep link Cue's DeepLinkRouter accepts (`cue://resume/…` carries
+    on with a show)."""
+    url = f"cue://{'resume' if resume else 'play'}/{rating_key}"
     if server:
         url += f"?server={quote(server, safe='')}"
     return url
@@ -274,8 +302,12 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
         for route, feature in ROUTE_FEATURES:
             if has(route):
                 features |= feature
-        if self._apple_tv_entity:
+        if self._apple_tv_entity or has(FEATURE_OPEN):
             features |= MediaPlayerEntityFeature.PLAY_MEDIA
+        if has(FEATURE_SEARCH):
+            features |= MediaPlayerEntityFeature.SEARCH_MEDIA
+        if has(FEATURE_CONTINUE):
+            features |= MediaPlayerEntityFeature.BROWSE_MEDIA
         queue = (self.player or {}).get("queue") or {}
         if queue.get("next") and has("next"):
             features |= MediaPlayerEntityFeature.NEXT_TRACK
@@ -585,25 +617,137 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
     async def async_play_media(
         self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
-        """Play a Plex ratingKey in Cue, starting Cue if it isn't open.
+        """Play a Plex ratingKey in Cue.
 
-        Order matters: bring Cue to the front through the linked `apple_tv`
-        entity first, then send `cue://play/…`. A link sent to an app that
-        isn't frontmost makes tvOS ask "Open in Cue?". Success is only
-        reported once Cue's own status shows the item playing.
+        With Cue open on a 1.2.1+ build: `/v1/open`, then wait for
+        `status.lastOpen` to say a player came up. A show or season resumes
+        where you are in it.
+
+        With Cue not open: start it through the linked `apple_tv` entity.
+        Order matters: bring Cue to the front first, then send
+        `cue://play/…`; a link sent to an app that isn't frontmost makes tvOS
+        ask "Open in Cue?". Success is only reported once Cue's own status
+        shows the item playing.
         """
+        extra = kwargs.get("extra") or {}
+        rating_key, server = parse_media_id(media_id, extra)
+        resume = bool(extra.get("resume", str(media_type) in library.RESUME_TYPES))
         atv = self._apple_tv_entity
-        if not atv:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN, translation_key="no_apple_tv"
-            )
-        rating_key, server = parse_media_id(media_id, kwargs.get("extra"))
-        url = cue_play_url(rating_key, server)
-
         async with self._play_media_lock:
-            await self._async_cold_start(atv, url, rating_key)
+            data = self.coordinator.data
+            if data is not None and data.reachable and self.coordinator.has(FEATURE_OPEN):
+                await self._async_open(rating_key, server, resume)
+                return
+            if not atv:
+                if data is not None and data.reachable:
+                    raise ServiceValidationError(
+                        translation_domain=DOMAIN, translation_key="no_apple_tv"
+                    )
+                raise ServiceValidationError(
+                    translation_domain=DOMAIN, translation_key="not_open_no_apple_tv"
+                )
+            url = cue_play_url(rating_key, server, resume=resume)
+            await self._async_cold_start(atv, url, rating_key, resume=resume)
 
-    async def _async_cold_start(self, atv: str, url: str, rating_key: str) -> None:
+    async def _async_open(self, rating_key: str, server: str | None, resume: bool) -> None:
+        """`/v1/open`, then wait for `status.lastOpen` to resolve."""
+        body: dict[str, Any] = {"ratingKey": rating_key}
+        if server:
+            body["server"] = server
+        if resume:
+            body["resume"] = True
+        client = self.coordinator.client
+        accepted = await self.coordinator.async_library("open", lambda: client.open(body))
+        request_id = accepted.get("requestId")
+        deadline = time.monotonic() + VERIFY_TIMEOUT
+        while True:
+            await self.coordinator.async_read_now()
+            status = (self.coordinator.data.status or {}) if self.coordinator.data else {}
+            last = status.get("lastOpen") or {}
+            if last.get("requestId") == request_id and last.get("result") not in (None, "pending"):
+                if last["result"] == "started":
+                    return
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="open_failed",
+                    translation_placeholders={
+                        "rating_key": rating_key,
+                        "result": str(last["result"]),
+                        "message": str(last.get("message") or ""),
+                    },
+                )
+            if time.monotonic() >= deadline or self.coordinator.auth_failed:
+                break
+            await asyncio.sleep(VERIFY_POLL)
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="play_not_started",
+            translation_placeholders={"url": f"/v1/open {rating_key}", "seconds": str(int(VERIFY_TIMEOUT))},
+        )
+
+    # MARK: search and browse (Cue 1.2.1)
+
+    async def async_search_media(self, query: SearchMediaQuery) -> SearchMedia:
+        """Assist's "play X on the TV" (`HassMediaSearchAndPlay`) lands here,
+        then plays the first result."""
+        types = [library.CLASS_TO_TYPE[c] for c in query.media_filter_classes or [] if c in library.CLASS_TO_TYPE]
+        if query.media_filter_classes and not types:
+            return SearchMedia(result=[])
+        try:
+            items = await self._async_search(query.search_query, types, 10)
+        except HomeAssistantError as err:
+            raise SearchError(str(err)) from err
+        return SearchMedia(result=[library.browse_item(i) for i in items])
+
+    async def _async_search(self, text: str, types: list[str] | None, limit: int | None) -> list[dict[str, Any]]:
+        self._require(FEATURE_SEARCH)
+        client = self.coordinator.client
+        reply = await self.coordinator.async_library("search", lambda: client.search(text, types, limit))
+        return [i for i in reply.get("results") or [] if isinstance(i, dict)]
+
+    async def _async_continue(self) -> list[dict[str, Any]]:
+        self._require(FEATURE_CONTINUE)
+        client = self.coordinator.client
+        reply = await self.coordinator.async_library("continue", client.continue_watching)
+        return [i for i in reply.get("items") or [] if isinstance(i, dict)]
+
+    def _require(self, feature: str) -> None:
+        if not self.coordinator.has(feature):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="needs_newer_cue",
+                translation_placeholders={"feature": feature},
+            )
+
+    async def async_browse_media(
+        self,
+        media_content_type: MediaType | str | None = None,
+        media_content_id: str | None = None,
+    ) -> BrowseMedia:
+        """Cue › Continue Watching."""
+        if media_content_id in (None, "", BROWSE_ROOT):
+            return library.root(self.coordinator.config_entry.title or "Cue")
+        if media_content_id == BROWSE_CONTINUE:
+            try:
+                items = await self._async_continue()
+            except HomeAssistantError as err:
+                raise BrowseError(str(err)) from err
+            return library.continue_folder([library.browse_item(i) for i in items])
+        raise BrowseError(f"Unknown Cue folder {media_content_id}")
+
+    async def async_service_search(
+        self, query: str, type: list[str] | None = None, limit: int | None = None
+    ) -> ServiceResponse:
+        """`cue.search`: titles on Cue's Plex server; never plays anything.
+        Each result carries the `media_content_id` for `play_media`."""
+        items = await self._async_search(query, type, limit)
+        return {"query": query, "results": library.with_ids(items)}
+
+    async def async_service_continue_watching(self) -> ServiceResponse:
+        """`cue.continue_watching`: Cue Home's Continue Watching row."""
+        return {"items": library.with_ids(await self._async_continue())}
+
+    async def _async_cold_start(self, atv: str, url: str, rating_key: str, *, resume: bool = False) -> None:
         hass = self.hass
         state = hass.states.get(atv)
         if state is None:
@@ -670,7 +814,7 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
         # only shows the page, and that's a failure too.
         deadline = time.monotonic() + VERIFY_TIMEOUT
         while True:
-            if self._is_playing(rating_key):
+            if self._is_playing(None if resume else rating_key):
                 return
             if time.monotonic() >= deadline:
                 break
@@ -684,13 +828,15 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
             translation_placeholders={"url": url, "seconds": str(int(VERIFY_TIMEOUT))},
         )
 
-    def _is_playing(self, rating_key: str) -> bool:
+    def _is_playing(self, rating_key: str | None) -> bool:
+        """`rating_key` is playing (None: anything is, for a resumed show,
+        which starts one of its episodes)."""
         player = self.player
         if not player:
             return False
         item = player.get("item") or {}
         return (
-            str(item.get("ratingKey")) == rating_key
+            (rating_key is None or str(item.get("ratingKey")) == rating_key)
             and player.get("state") in STARTED_STATES
         )
 

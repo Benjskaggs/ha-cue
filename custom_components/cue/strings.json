@@ -120,7 +120,7 @@
       "message": "{media_id} isn't a Plex rating key (digits, optionally prefixed by the server id and a colon)."
     },
     "no_apple_tv": {
-      "message": "Play Media needs a linked Apple TV media player. Set it in the Cue integration's options."
+      "message": "Play Media needs Cue 1.2.1 or later, or a linked Apple TV media player (set it in the Cue integration's options)."
     },
     "apple_tv_missing": {
       "message": "The linked Apple TV media player {entity_id} doesn't exist."
@@ -154,6 +154,21 @@
     },
     "no_choice": {
       "message": "Give exactly one of: {fields}."
+    },
+    "not_open_no_apple_tv": {
+      "message": "Cue isn't open, and there's no linked Apple TV media player to start it. Open Cue, or link the Apple TV in the Cue integration's options."
+    },
+    "open_failed": {
+      "message": "Cue didn't start {rating_key}: {result}. {message}"
+    },
+    "needs_newer_cue": {
+      "message": "This needs a newer Cue on the Apple TV (it doesn't serve {feature} yet)."
+    },
+    "signed_out": {
+      "message": "Cue isn't signed in to a Plex server right now."
+    },
+    "not_found": {
+      "message": "Cue couldn't find that: {message}"
     }
   },
   "issues": {
@@ -234,6 +249,28 @@
           "description": "Answer a Cue error in the response (ok: false, error) instead of failing the action. For scripts."
         }
       }
+    },
+    "search": {
+      "name": "Search",
+      "description": "Searches Cue's Plex library for movies, shows and episodes. Never plays anything; each result has the media_content_id to pass to media_player.play_media.",
+      "fields": {
+        "query": {
+          "name": "Query",
+          "description": "What to look for."
+        },
+        "type": {
+          "name": "Type",
+          "description": "Only these kinds: movie, show, episode. Default all."
+        },
+        "limit": {
+          "name": "Limit",
+          "description": "At most this many results (1–50, default 10)."
+        }
+      }
+    },
+    "continue_watching": {
+      "name": "Continue Watching",
+      "description": "Cue Home's Continue Watching row: what's part-watched or next up, each with the media_content_id to pass to media_player.play_media."
     }
   }
 }

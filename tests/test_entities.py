@@ -89,8 +89,9 @@ async def test_playing_attributes(hass: HomeAssistant, fake_cue: FakeCue, playin
     features = MediaPlayerEntityFeature(a["supported_features"])
     assert MediaPlayerEntityFeature.NEXT_TRACK in features
     assert MediaPlayerEntityFeature.SEEK in features
-    # No linked apple_tv entity: no play_media.
-    assert MediaPlayerEntityFeature.PLAY_MEDIA not in features
+    # No linked apple_tv entity, but a 1.2.1 build opens titles itself.
+    assert MediaPlayerEntityFeature.PLAY_MEDIA in features
+    assert MediaPlayerEntityFeature.SEARCH_MEDIA in features
     assert MediaPlayerEntityFeature.VOLUME_SET not in features
 
     assert hass.states.get(SUBS).state == "English (SRT)"

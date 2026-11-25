@@ -56,6 +56,8 @@ tags:
   - name: discovery
   - name: status
   - name: player
+  - name: library
+    description: Search, open and Continue Watching (1.2.1). They answer for the Plex server Cue is connected to; 503 `signed_out` while Cue isn't connected.
   - name: legacy
     description: |
       The 1.0 interface, frozen. Parameters may come from the query string or
@@ -86,7 +88,7 @@ paths:
                 app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
                 pairing: false
                 features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip,
-                           stop, previous, subtitleOffset,
+                           stop, previous, subtitleOffset, search, open, continueWatching,
                            artwork.logo, artwork.square, colors, subtitles.language, subtitles.enabled, audio.language, status.app]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -414,6 +416,121 @@ paths:
               nudgeEarlier: { value: { deltaMs: -100 } }
       responses: *commandResponses
 
+  /v1/search:
+    get:
+      tags: [library]
+      operationId: search
+      summary: Search the library (1.2.1). Never plays anything.
+      description: |
+        Titles only (movies, shows, episodes; no people, collections or
+        playlists), in Plex's relevance order, from the server Cue is
+        connected to. Percent-encode `q` (`%20` for a space; `+` is a literal
+        plus). Pass a result's `ratingKey` and `server` to `/v1/open`.
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - name: type
+          in: query
+          description: movie, show or episode; comma-separated for several. Default all three.
+          schema: { type: string, example: "show,movie" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 10 } }
+      responses:
+        "200":
+          description: The results, best first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [query, results]
+                properties:
+                  query: { type: string }
+                  results: { type: array, items: { $ref: "#/components/schemas/MediaItem" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/hubs/continue:
+    get:
+      tags: [library]
+      operationId: continueWatching
+      summary: Continue Watching, as on Cue's Home (1.2.1).
+      description: Plex's `continueWatching` hub (the `onDeck` hub on older servers), in its order.
+      responses:
+        "200":
+          description: The row.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/MediaItem" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/open:
+    post:
+      tags: [library]
+      operationId: open
+      summary: Open a title's page, and play it (1.2.1).
+      description: |
+        Works like a `cue://play` link: any player that's up closes (saving
+        its resume point), the title's page opens, and Cue presses its Play,
+        so resume points, a show's next episode, version rules and Watch
+        Party all behave as if you'd pressed it. `play: false` only shows
+        the page.
+
+        Checked first: the item must exist on the connected server (404
+        `not_found`), and a `server` that isn't the connected one is 409
+        `unsupported` (a rating key only means something on its own server).
+        Then 202 at once. **The outcome is `status.lastOpen`**: `started` when
+        a player comes up, `expired` if none does within 35 s. Don't report
+        success before it says `started`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ratingKey]
+              properties:
+                ratingKey: { type: string, pattern: "^[0-9]{1,20}$" }
+                server: { type: string, description: The result's `server` (Plex machineIdentifier). Default the connected server. }
+                play: { type: boolean, default: true }
+                offsetMs: { type: integer, minimum: 0, description: "Start here (0 = the beginning). Default the resume point." }
+                resume:
+                  type: boolean
+                  default: false
+                  description: On a show, season or episode, play where you are in the show (the half-watched episode, or the next one), like `cue://resume`.
+            examples:
+              movie: { value: { ratingKey: "4321", server: "0123abcd" } }
+              resumeShow: { value: { ratingKey: "100", resume: true } }
+              pageOnly: { value: { ratingKey: "100", play: false } }
+      responses:
+        "202":
+          description: Accepted; watch `status.lastOpen` for this `requestId`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requestId, result]
+                properties:
+                  requestId: { type: string }
+                  result: { type: string, const: pending }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
   # --- legacy (frozen 1.0 interface) ---------------------------------------
 
   /status:
@@ -579,7 +696,7 @@ components:
             One name per v1 route this build serves (`info`, `status`, `artwork`,
             `play`, `pause`, `toggle`, `restart`, `next`, `seek`, `rate`,
             `subtitles`, `audio`, `skip`; 1.2.1 adds `stop`, `previous`,
-            `subtitleOffset`). Feature-detect on these rather than on the
+            `subtitleOffset`, `search`, `open`, `continueWatching`). Feature-detect on these rather than on the
             version. Absent on builds before Slice B, which serve
             `info` … `skip`. Names are only ever added. After the route names
             come capabilities: `artwork.logo`, `artwork.square` and `colors`
@@ -623,6 +740,19 @@ components:
           oneOf:
             - { type: "null" }
             - { $ref: "#/components/schemas/Player" }
+        lastOpen:
+          type: object
+          description: "1.2.1. The latest `/v1/open`. Omitted until there's been one."
+          required: [requestId, ratingKey, result]
+          properties:
+            requestId: { type: string }
+            ratingKey: { type: string, description: The key that was asked for. }
+            result:
+              type: string
+              enum: [pending, started, opened, expired, failed]
+              description: "`started`: a player came up. `opened`: `play: false`, the page is showing. `expired`: no player within 35 s."
+            startedRatingKey: { type: string, description: "What started, when it isn't the key asked for (a show resumed into an episode)." }
+            message: { type: string }
         onstage:
           type: object
           required: [enabled, available]
@@ -707,6 +837,26 @@ components:
         offsetMs:
           type: integer
           description: "1.2.1, subtitles only. The viewer's subtitle delay in ms (positive = later), as the timing menu shows it."
+
+    MediaItem:
+      type: object
+      description: A title in search results or Continue Watching (1.2.1).
+      required: [ratingKey, type, title, server]
+      properties:
+        ratingKey: { type: string }
+        type: { type: string, description: "movie, show, season, episode, …" }
+        title: { type: string }
+        year: { type: integer }
+        server: { type: string, description: Plex machineIdentifier; pass back to `/v1/open`. }
+        show:
+          type: object
+          required: [title]
+          properties: { title: { type: string }, ratingKey: { type: string } }
+        season: { type: integer }
+        episode: { type: integer }
+        durationMs: { type: integer }
+        viewOffsetMs: { type: integer, description: Where the viewer stopped, when part-watched. }
+        watched: { type: boolean }
 
     QueueItem:
       type: object

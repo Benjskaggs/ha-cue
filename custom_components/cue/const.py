@@ -22,6 +22,9 @@ MAX_SCAN_INTERVAL: Final = 10
 # Every request to the Apple TV gets this long, end to end (scout §5: one
 # request per connection, 10 s server-side deadline; we give up sooner).
 REQUEST_TIMEOUT: Final = 5
+# Search, Continue Watching and open ask Plex first: give them most of Cue's
+# own 10 s deadline.
+LIBRARY_TIMEOUT: Final = 9
 
 # How long to back off when Cue answers 429 without a usable Retry-After.
 DEFAULT_RETRY_AFTER: Final = 300
@@ -50,6 +53,14 @@ FEATURE_SUBTITLE_OFFSET: Final = "subtitleOffset"
 FEATURE_APP_STATE: Final = "status.app"
 # Cue clamps the subtitle delay to this many seconds either way.
 SUBTITLE_OFFSET_LIMIT: Final = 20.0
+
+# Slice D (Cue 1.2.1): voice "play X".
+FEATURE_SEARCH: Final = "search"
+FEATURE_OPEN: Final = "open"
+FEATURE_CONTINUE: Final = "continueWatching"
+# media_content_id values for the browse tree.
+BROWSE_ROOT: Final = "cue_root"
+BROWSE_CONTINUE: Final = "cue_continue"
 
 # The couch-card art (contract `cue-art-contract.md` §2): extra media player
 # attributes, each an HA-proxied URL, and the feature a build must list for

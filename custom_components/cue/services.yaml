@@ -82,3 +82,36 @@ skip:
       default: false
       selector:
         boolean:
+
+search:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+  fields:
+    query:
+      required: true
+      example: "Grey's Anatomy"
+      selector:
+        text:
+    type:
+      selector:
+        select:
+          multiple: true
+          options:
+            - movie
+            - show
+            - episode
+    limit:
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 50
+          mode: box
+
+continue_watching:
+  target:
+    entity:
+      integration: cue
+      domain: media_player

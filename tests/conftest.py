@@ -146,8 +146,10 @@ class FakeAppleTV(MediaPlayerEntity):
         if not (self.link_plays and self._attr_app_name == "Cue"):
             return  # tvOS's "Open in Cue?" prompt, or a link that didn't take
         url = urlparse(media_id)
-        assert url.scheme == "cue" and url.netloc == "play"
-        self.fake.play(url.path.lstrip("/"))
+        assert url.scheme == "cue" and url.netloc in ("play", "resume")
+        key = url.path.lstrip("/")
+        # `cue://resume/<show>` starts one of its episodes.
+        self.fake.play("12345" if url.netloc == "resume" and key == "100" else key)
 
 
 @pytest.fixture

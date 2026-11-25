@@ -40,6 +40,8 @@ ART_FEATURES = ["artwork.logo", "artwork.square", "colors"]
 C_ROUTES = ["stop", "previous", "subtitleOffset"]
 C_CAPABILITIES = ["subtitles.language", "subtitles.enabled", "audio.language", "status.app"]
 C_FEATURES = C_ROUTES + C_CAPABILITIES
+# Slice D (1.2.1): search, open, Continue Watching.
+D_ROUTES = ["search", "open", "continueWatching"]
 ACCENT = "#E0A030"
 
 
@@ -55,7 +57,17 @@ def png_with_alpha(rating_key: str) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw))
             + chunk(b"IEND", b""))
 INFO = {"api": 1, "id": DEVICE_ID, "name": "Living Room", "app": APP, "pairing": False,
-        "features": FEATURES + C_ROUTES + ART_FEATURES + C_CAPABILITIES}
+        "features": FEATURES + C_ROUTES + D_ROUTES + ART_FEATURES + C_CAPABILITIES}
+
+# The fake's Plex library (openapi `MediaItem`s).
+SHOW = {"ratingKey": "100", "type": "show", "title": "Grey's Anatomy", "year": 2005, "server": SERVER_ID}
+EPISODE = {"ratingKey": "12345", "type": "episode", "title": "Before and After", "server": SERVER_ID,
+           "show": {"title": "Grey's Anatomy", "ratingKey": "100"}, "season": 5, "episode": 15,
+           "durationMs": 2583000}
+MOVIE = {"ratingKey": "4321", "type": "movie", "title": "The Matrix", "year": 1999, "server": SERVER_ID,
+         "durationMs": 8160000, "watched": False}
+CATALOG = [SHOW, EPISODE, MOVIE]
+CONTINUE = [{**EPISODE, "viewOffsetMs": 1155000, "watched": False}, {**MOVIE, "viewOffsetMs": 60000}]
 
 IDLE = {
     "api": 1,
@@ -167,6 +179,12 @@ class FakeCue:
         # Slice C state: what `status.app` and `subtitles.offsetMs` report.
         self.foreground = True
         self.subtitle_offset_ms = 0
+        # Slice D: whether /v1/open brings a player up, and its record.
+        self.open_starts = True
+        # Set: the result /v1/open's record lands on instead ("expired", …).
+        self.open_outcome: str | None = None
+        self.last_open: dict[str, Any] | None = None
+        self.signed_in = True
         # Called inside an artwork request, before it answers (tests use it
         # to change the item mid-fetch).
         self.on_artwork: Callable[[], None] | None = None
@@ -213,8 +231,12 @@ class FakeCue:
             self.info["features"] = [f for f in self.info["features"] if f not in names]
 
     def before_slice_c(self) -> None:
-        """A 1.2 build: art, but no stop/previous/offset/`status.app`."""
-        self.drop_features(C_FEATURES)
+        """A 1.2 build: art, but nothing from 1.2.1."""
+        self.drop_features(C_FEATURES + D_ROUTES)
+
+    def before_slice_d(self) -> None:
+        """A 1.2.1 build with slice C only: no search, open or Continue Watching."""
+        self.drop_features(D_ROUTES)
 
     def idle(self) -> None:
         self.status = copy.deepcopy(IDLE)
@@ -223,7 +245,7 @@ class FakeCue:
         """A Slice B build from before the couch-card art (and so before
         everything after it)."""
         self.art = False
-        self.drop_features(ART_FEATURES + C_FEATURES)
+        self.drop_features(ART_FEATURES + C_FEATURES + D_ROUTES)
         if self.player:
             self.player.pop("colors", None)
             self.player["artwork"].pop("logo", None)
@@ -254,7 +276,66 @@ class FakeCue:
         app.router.add_get("/v1/artwork/{kind}", self._artwork)
         for name in (*self.COMMANDS, *self.extra_commands):
             app.router.add_post(f"/v1/player/{name}", self._command)
+        app.router.add_get("/v1/search", self._search)
+        app.router.add_get("/v1/hubs/continue", self._continue)
+        app.router.add_post("/v1/open", self._open)
         return app
+
+    # MARK: library (slice D)
+
+    def _signed_out(self) -> web.Response | None:
+        if not self.signed_in:
+            return _error(503, "signed_out", "Cue isn't signed in to a Plex server right now.")
+        return None
+
+    async def _search(self, request: web.Request) -> web.Response:
+        q = request.query.get("q", "").strip()
+        if not q:
+            return _error(400, "invalid_parameter", "q is the text to search for.")
+        types = [t for t in request.query.get("type", "").split(",") if t] or ["movie", "show", "episode"]
+        limit = int(request.query.get("limit", "10"))
+        if (refused := self._signed_out()) is not None:
+            return refused
+        needle = q.casefold()
+        found = [
+            i for i in CATALOG
+            if i["type"] in types
+            and (needle in i["title"].casefold() or needle in (i.get("show") or {}).get("title", "").casefold())
+        ]
+        return web.json_response({"query": q, "results": copy.deepcopy(found[:limit])})
+
+    async def _continue(self, request: web.Request) -> web.Response:
+        if (refused := self._signed_out()) is not None:
+            return refused
+        return web.json_response({"items": copy.deepcopy(CONTINUE)})
+
+    async def _open(self, request: web.Request) -> web.Response:
+        body: dict[str, Any] = request["body"]
+        key = body.get("ratingKey")
+        if not isinstance(key, str) or not key.isdigit():
+            return _error(400, "invalid_parameter", "ratingKey is a string of digits.")
+        if (refused := self._signed_out()) is not None:
+            return refused
+        if body.get("server") not in (None, SERVER_ID):
+            return _error(409, "unsupported", "That item is on another Plex server.")
+        item = next((i for i in CATALOG if i["ratingKey"] == key), None)
+        if item is None:
+            return _error(404, "not_found", "Plex has no such item.")
+        self.open_count = getattr(self, "open_count", 0) + 1
+        request_id = f"req-{self.open_count}"
+        play = body.get("play", True)
+        self.last_open = {"requestId": request_id, "ratingKey": key, "result": "pending" if play else "opened"}
+        if play and self.open_outcome:
+            self.last_open["result"] = self.open_outcome
+        elif play and self.open_starts:
+            # A show resumes into its half-watched episode.
+            started = EPISODE["ratingKey"] if item["type"] == "show" else key
+            self.play(started)
+            self.player["item"].update(title=next(i["title"] for i in CATALOG if i["ratingKey"] == started))
+            self.last_open["result"] = "started"
+            if started != key:
+                self.last_open["startedRatingKey"] = started
+        return web.json_response({"requestId": request_id, "result": "pending"}, status=202)
 
     @web.middleware
     async def _gates(self, request: web.Request, handler):
@@ -304,6 +385,8 @@ class FakeCue:
             out["app"]["screen"] = "player" if out["player"] else "home"
         if self.has("subtitleOffset") and out["player"]:
             out["player"]["subtitles"]["offsetMs"] = self.subtitle_offset_ms
+        if self.last_open is not None:
+            out["lastOpen"] = copy.deepcopy(self.last_open)
         return out
 
     async def _status(self, request: web.Request) -> web.Response:

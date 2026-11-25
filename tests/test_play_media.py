@@ -46,6 +46,14 @@ def test_parse_media_id() -> None:
     assert cue_play_url("12345", "0123abcd") == "cue://play/12345?server=0123abcd"
 
 
+
+@pytest.fixture(autouse=True)
+def cold_start_build(fake_cue: FakeCue) -> None:
+    """These tests cover the apple_tv cold start, the only path before Cue
+    1.2.1 (and still the one when Cue isn't open): a build without
+    `/v1/open`. `test_open.py` covers the open path."""
+    fake_cue.before_slice_d()
+
 async def test_cold_start_from_closed(
     hass: HomeAssistant, fake_cue: FakeCue, apple_tv: FakeAppleTV
 ) -> None:

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Cue Control API
-  version: "1.0.0"
+  version: "1.1.0"
   summary: Read and drive Cue's player on an Apple TV from your home network.
   description: |
     Cue for Apple TV can listen on your local network so Home Assistant (or any
@@ -9,7 +9,13 @@ info:
     called **Home Assistant Control** (Settings › Connection).
 
     - **Plain HTTP on your LAN, port 7788.** Requests from non-private
-      addresses are refused (403 `not_lan`). Never port-forward it.
+      addresses are refused (403 `not_lan`). Private means RFC 1918 IPv4,
+      link-local, loopback, IPv6 unique-local, or a global IPv6 address
+      inside one of the Apple TV's own on-link prefixes (Wi-Fi/Ethernet,
+      /48 or longer). Never port-forward it.
+    - **Discovery:** Bonjour `_cue-control._tcp`, instance name = the Apple
+      TV's name, TXT `v=1`, `api=1`, `port=7788`, `id=<GET /v1/info id>`,
+      `name=<Apple TV name>`, `app=<Cue version>`. Nothing about auth state.
     - **Cue must be open.** tvOS suspends Cue soon after it leaves the
       foreground; a refused connection means "Cue isn't open".
     - **One request per connection**; the server closes after each reply.
@@ -19,8 +25,16 @@ info:
       your own.
     - **Limits:** 8 KB of headers, 16 KB of body, `Content-Length` only (no
       chunked bodies), 5 s to send the headers, 10 s per request, 16 open
-      connections. 10 wrong tokens in a minute from one address lock it out
-      for 5 minutes (429 `rate_limited` with `Retry-After`).
+      connections.
+    - **Wrong tokens** (429 `rate_limited` with `Retry-After`, 5 minutes):
+      - the same wrong token sent 10 times in a minute from one address is
+        refused, but only that token from that address. Other clients on
+        the same address, with the right token, are unaffected;
+      - 10 *different* wrong tokens in a minute from one address lock the
+        whole address, unauthenticated `GET /v1/info` included;
+      - during an address lockout, the right token still passes from an
+        address it had already succeeded from (within the last day).
+      Stop on 401; never retry a token that was refused.
     - **No CORS headers**: browsers on the LAN can't read replies.
 
     This file is the source of truth for v1. Routes are added spec-first; the
@@ -55,6 +69,9 @@ paths:
       tags: [discovery]
       operationId: getInfo
       summary: Identify the Apple TV (no token needed).
+      description: |
+        No token needed, but a client that has one may send it: during an
+        address lockout, a known-good token lets this call through too.
       security: []
       responses:
         "200":
@@ -64,9 +81,11 @@ paths:
               schema: { $ref: "#/components/schemas/Info" }
               example:
                 api: 1
+                id: 3f2a5c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b
                 name: Living Room
                 app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
                 pairing: false
+                features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Error" }
@@ -460,12 +479,30 @@ components:
 
     Info:
       type: object
-      required: [api, name, app, pairing]
+      required: [api, name, app, pairing, features]
       properties:
         api: { type: integer, const: 1 }
+        id:
+          type: string
+          format: uuid
+          description: |
+            This Apple TV's stable id (a random UUID kept in its Keychain, not
+            synced). Also in the Bonjour TXT as `id`. Survives IP changes and
+            app updates. Omitted only if the Keychain can't hold it, and absent
+            on builds before Slice B; key on the host then.
         name: { type: string, description: The Apple TV's name. }
         app: { $ref: "#/components/schemas/AppVersion" }
         pairing: { type: boolean, description: "false until pairing ships; use a token." }
+        features:
+          type: array
+          items: { type: string }
+          description: |
+            One name per v1 route this build serves (`info`, `status`, `artwork`,
+            `play`, `pause`, `toggle`, `restart`, `next`, `seek`, `rate`,
+            `subtitles`, `audio`, `skip`; later ones such as `stop` and
+            `previous` appear when they ship). Feature-detect on these rather
+            than on the version. Absent on builds before Slice B, which serve
+            exactly the list above. Names are only ever added.
 
     AppVersion:
       type: object

@@ -13,7 +13,7 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Benjskaggs/ha-cue/issues",
   "requirements": [],
-  "version": "0.3.0",
+  "version": "0.4.0",
   "zeroconf": [
     "_cue-control._tcp.local."
   ]

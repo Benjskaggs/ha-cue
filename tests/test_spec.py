@@ -77,3 +77,20 @@ def test_error_codes_known() -> None:
     codes = set(SCHEMAS["ErrorCode"]["enum"])
     assert {"unauthorized", "not_lan", "disabled", "signed_out", "rate_limited",
             "nothing_playing", "no_next", "no_marker", "unknown_track"} <= codes
+
+
+def test_art_contract_in_spec() -> None:
+    """The couch-card art the fake serves is what the spec says (1.2)."""
+    import re
+
+    from .fake_cue import ACCENT, ART_FEATURES
+
+    kinds = SPEC["paths"]["/v1/artwork/{kind}"]["get"]["parameters"][0]["schema"]["enum"]
+    assert {"logo", "square"} <= set(kinds)
+    example = SPEC["paths"]["/v1/info"]["get"]["responses"]["200"]["content"]["application/json"]["example"]
+    assert set(ART_FEATURES) <= set(example["features"])
+    player = SCHEMAS["Player"]["properties"]
+    assert {"logo", "square"} <= set(player["artwork"]["properties"])
+    pattern = player["colors"]["properties"]["accent"]["pattern"]
+    assert re.match(pattern, ACCENT)
+    _check(playing_status()["player"]["colors"], player["colors"], "colors")

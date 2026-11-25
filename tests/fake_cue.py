@@ -7,16 +7,21 @@ strict pre-Slice-B one (any 10 wrong tokens a minute lock the whole address
 for 5 minutes): the worst case, so tests prove the integration never retries
 a bad token whatever build it meets.
 
-By default it's a Slice B build (`/v1/info` has `id` and `features`);
-`legacy()` turns it into an older one.
+By default it's the newest build: Slice B (`/v1/info` `id` + `features`)
+plus the couch-card art (`artwork.logo`, `artwork.square`, `colors`, per
+`cue-art-contract.md` §1). `without_art()` makes it a plain Slice B build;
+`legacy()` one from before Slice B.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import copy
 from datetime import UTC, datetime
 import socket
+import struct
 from typing import Any
+import zlib
 
 from aiohttp import web
 
@@ -29,8 +34,23 @@ APP = {"version": "1.2", "build": "2026.1125.900", "platform": "tvOS"}
 DEVICE_ID = "3f2a5c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b"
 FEATURES = ["info", "status", "artwork", "play", "pause", "toggle", "restart", "next",
             "seek", "rate", "subtitles", "audio", "skip"]
+ART_FEATURES = ["artwork.logo", "artwork.square", "colors"]
+ACCENT = "#E0A030"
+
+
+def png_with_alpha(rating_key: str) -> bytes:
+    """A real 2x1 RGBA PNG: one opaque pixel, one fully transparent, with
+    the ratingKey in a tEXt chunk so each item's logo differs."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    raw = b"\x00" + bytes([255, 0, 0, 255, 0, 0, 0, 0])
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 8, 6, 0, 0, 0))
+            + chunk(b"tEXt", b"ratingKey\x00" + rating_key.encode())
+            + chunk(b"IDAT", zlib.compress(raw))
+            + chunk(b"IEND", b""))
 INFO = {"api": 1, "id": DEVICE_ID, "name": "Living Room", "app": APP, "pairing": False,
-        "features": FEATURES}
+        "features": FEATURES + ART_FEATURES}
 
 IDLE = {
     "api": 1,
@@ -45,7 +65,7 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def playing_status(rating_key: str = "12345") -> dict[str, Any]:
+def playing_status(rating_key: str = "12345", *, art: bool = True) -> dict[str, Any]:
     """The openapi `playing` example, with a second subtitle track and a
     credits marker so every select and button has something to do."""
     return {
@@ -91,7 +111,12 @@ def playing_status(rating_key: str = "12345") -> dict[str, Any]:
                 "still": f"/v1/artwork/still?key={rating_key}",
                 "art": f"/v1/artwork/art?key={rating_key}",
                 "poster": f"/v1/artwork/poster?key={rating_key}",
+                **({
+                    "square": f"/v1/artwork/square?key={rating_key}",
+                    "logo": f"/v1/artwork/logo?key={rating_key}",
+                } if art else {}),
             },
+            **({"colors": {"accent": ACCENT}} if art else {}),
         },
         "onstage": {"enabled": False, "available": True},
     }
@@ -129,6 +154,10 @@ class FakeCue:
         self.auth_headers: list[tuple[str, str | None]] = []
         self.host = "127.0.0.1"
         self.port = 0  # picked on first start()
+        self.art = True
+        # Called inside an artwork request, before it answers (tests use it
+        # to change the item mid-fetch).
+        self.on_artwork: Callable[[], None] | None = None
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
 
@@ -161,13 +190,24 @@ class FakeCue:
     # MARK: state helpers for tests
 
     def play(self, rating_key: str = "12345") -> None:
-        self.status = playing_status(rating_key)
+        self.status = playing_status(rating_key, art=self.art)
 
     def idle(self) -> None:
         self.status = copy.deepcopy(IDLE)
 
+    def without_art(self) -> None:
+        """A Slice B build from before the couch-card art."""
+        self.art = False
+        if "features" in self.info:
+            self.info["features"] = [f for f in self.info["features"] if f not in ART_FEATURES]
+        if self.player:
+            self.player.pop("colors", None)
+            self.player["artwork"].pop("logo", None)
+            self.player["artwork"].pop("square", None)
+
     def legacy(self) -> None:
-        """A build before Slice B: no `id`, no `features`."""
+        """A build before Slice B: no `id`, no `features`, no art extras."""
+        self.without_art()
         self.info.pop("id", None)
         self.info.pop("features", None)
 
@@ -238,13 +278,20 @@ class FakeCue:
 
     async def _artwork(self, request: web.Request) -> web.Response:
         kind = request.match_info["kind"]
-        if kind not in ("still", "art", "poster"):
+        kinds = ("still", "art", "poster", "logo", "square") if self.art else ("still", "art", "poster")
+        if kind not in kinds:
             return _error(404, "not_found", "Artwork kinds are still, art and poster.")
+        if self.on_artwork:
+            self.on_artwork()
         if not self.player:
             return _error(409, "nothing_playing", "Nothing is playing.")
         if kind not in self.player["artwork"]:
             return _error(404, "not_found", f"This item has no {kind} artwork.")
-        return web.Response(body=JPEG, content_type="image/jpeg")
+        # Like Cue: always the item playing NOW, whatever `key` says.
+        rating_key = self.player["item"]["ratingKey"]
+        if kind == "logo":
+            return web.Response(body=png_with_alpha(rating_key), content_type="image/png")
+        return web.Response(body=JPEG + rating_key.encode(), content_type="image/jpeg")
 
     async def _command(self, request: web.Request) -> web.Response:
         name = request.path.rsplit("/", 1)[1]

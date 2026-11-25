@@ -257,7 +257,7 @@ async def test_artwork_proxied_with_token(
     url = hass.states.get(PLAYER).attributes["entity_picture"]
     resp = await client.get(url)
     assert resp.status == HTTPStatus.OK
-    assert await resp.read() == JPEG
+    assert await resp.read() == JPEG + b"12345"
     assert fake_cue.paths("GET")[-1] == "/v1/artwork/still"
 
 

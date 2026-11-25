@@ -39,6 +39,29 @@ LEGACY_FEATURES: Final = frozenset(
      "seek", "rate", "subtitles", "audio", "skip"}
 )
 
+# Features (`/v1/info.features`) that decide which entities exist. Only a
+# difference here, once a closed-at-setup Cue is first heard from, is worth
+# a reload; the rest (artwork kinds, colours) are read live.
+ENTITY_FEATURES: Final = frozenset({"subtitles", "audio", "rate", "skip", "restart"})
+
+# The couch-card art (contract `cue-art-contract.md` §2): extra media player
+# attributes, each an HA-proxied URL, and the feature a build must list for
+# it (None: every v1 build serves the kind).
+ART_KINDS: Final = (
+    ("art", "entity_picture_art", None),
+    ("square", "entity_picture_square", "artwork.square"),
+    ("logo", "entity_picture_logo", "artwork.logo"),
+)
+ATTR_ACCENT_COLOR: Final = "accent_color"
+FEATURE_COLORS: Final = "colors"
+# Path segment for the art in HA's media_player image proxy
+# (`/api/media_player_proxy/<entity>/browse_media/cue_<kind>/<ratingKey>`).
+ART_CONTENT_PREFIX: Final = "cue_"
+# Images kept per entry, and the biggest one kept (a clearLogo can be huge;
+# bigger ones are still served, just not cached).
+ART_CACHE_SIZE: Final = 12
+ART_CACHE_MAX_BYTES: Final = 8 * 1024 * 1024
+
 # The repair issue raised for a pre-Slice-B build (no `features`, no `id`).
 ISSUE_OUTDATED: Final = "outdated_cue"
 

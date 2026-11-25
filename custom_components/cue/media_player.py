@@ -50,7 +50,15 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
-from .const import APPLE_TV_APP_NAME, CONF_APPLE_TV_ENTITY, DOMAIN
+from .const import (
+    APPLE_TV_APP_NAME,
+    ART_CONTENT_PREFIX,
+    ART_KINDS,
+    ATTR_ACCENT_COLOR,
+    CONF_APPLE_TV_ENTITY,
+    DOMAIN,
+    FEATURE_COLORS,
+)
 from .coordinator import CueConfigEntry, CueCoordinator
 from .entity import CueEntity
 from .legacy import NOT_OPEN, error_status, find_track, v0_status
@@ -114,6 +122,7 @@ ATTR_RETURN_ERRORS = "return_errors"
 _RETURN_ERRORS = {vol.Optional(ATTR_RETURN_ERRORS, default=False): cv.boolean}
 
 _RATING_KEY = re.compile(r"^\d+$")
+_ACCENT = re.compile(r"^#[0-9A-Fa-f]{6}$")
 _SERVER_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -368,7 +377,45 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
         if isinstance(nxt, dict):
             attrs["next_title"] = nxt.get("title")
             attrs["next_rating_key"] = nxt.get("ratingKey")
+        attrs.update(self._art_attributes(player))
         return attrs
+
+    def _art_attributes(self, player: dict[str, Any]) -> dict[str, Any]:
+        """The couch-card attributes (cue-art-contract §2), each only when
+        this build lists the feature AND the item has that art."""
+        has = self.coordinator.has
+        out: dict[str, Any] = {}
+        accent = (player.get("colors") or {}).get("accent")
+        if has(FEATURE_COLORS) and isinstance(accent, str) and _ACCENT.match(accent):
+            out[ATTR_ACCENT_COLOR] = accent.upper()
+        rating_key = self._item.get("ratingKey")
+        artwork = player.get("artwork") or {}
+        if not rating_key or not self.hass:
+            return out
+        for kind, attribute, feature in ART_KINDS:
+            if not isinstance(artwork.get(kind), str):
+                continue
+            if feature is not None and not has(feature):
+                continue
+            out[attribute] = self.get_browse_image_url(f"{ART_CONTENT_PREFIX}{kind}", str(rating_key))
+        return out
+
+    async def async_get_browse_image(
+        self,
+        media_content_type: str,
+        media_content_id: str,
+        media_image_id: str | None = None,
+    ) -> tuple[bytes | None, str | None]:
+        """HA's image proxy for the `entity_picture_*` URLs: Cue's
+        `/v1/artwork/<kind>`, with the token, from the per-item cache."""
+        if not media_content_type.startswith(ART_CONTENT_PREFIX):
+            return None, None
+        kind = media_content_type[len(ART_CONTENT_PREFIX):]
+        feature = next((f for k, _, f in ART_KINDS if k == kind), "unknown")
+        if feature == "unknown" or (feature is not None and not self.coordinator.has(feature)):
+            return None, None
+        result = await self.coordinator.async_get_item_artwork(kind, media_content_id)
+        return result if result is not None else (None, None)
 
     # MARK: artwork, proxied through HA (the image needs the token)
 

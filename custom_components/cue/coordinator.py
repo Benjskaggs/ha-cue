@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -23,7 +24,7 @@ from .api import (
     CueRateLimitedError,
     CueResponseError,
 )
-from .const import DOMAIN, LEGACY_FEATURES
+from .const import ART_CACHE_MAX_BYTES, ART_CACHE_SIZE, DOMAIN, ENTITY_FEATURES, LEGACY_FEATURES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,6 +130,10 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         self.info: CueInfo | None = None
         self._late_info_started = False
         self.options_at_setup = dict(entry.options)
+        # Couch-card art by (kind, ratingKey), fetched on first request for
+        # an item and kept (LRU): never per poll.
+        self._art_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
+        self._art_inflight: dict[tuple[str, str], asyncio.Future[tuple[bytes, str] | None]] = {}
 
     def has(self, feature: str) -> bool:
         """Whether this build serves the v1 route `feature` (`stop`, …)."""
@@ -148,14 +153,14 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         """Entities were built without `info`: reload if it changes them.
 
         That's a stable id to adopt (the entry was keyed on the host) or a
-        feature set other than the one assumed.
+        different set of the features that decide which entities exist.
         """
         entry = self.config_entry
         if info.device_id and entry.unique_id != info.device_id:
             other = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, info.device_id)
             if other is None:
                 return True
-        return info.features != LEGACY_FEATURES
+        return (info.features & ENTITY_FEATURES) != (LEGACY_FEATURES & ENTITY_FEATURES)
 
     async def _async_late_info(self) -> None:
         """Cue wasn't open at setup; now it is. Learn it, reload if needed."""
@@ -286,6 +291,54 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         except (CueConnectionError, CueResponseError) as err:
             _LOGGER.debug("No artwork from Cue: %s", err)
             return None
+
+    def _playing_key(self) -> str | None:
+        player = self.data.player if self.data else None
+        item = (player or {}).get("item") or {}
+        key = item.get("ratingKey")
+        return str(key) if key is not None else None
+
+    async def async_get_item_artwork(self, kind: str, rating_key: str) -> tuple[bytes, str] | None:
+        """`kind` art of item `rating_key`, cached per (kind, ratingKey).
+
+        Cue's `/v1/artwork/{kind}` always answers for the item playing *now*
+        (the key is only a cache key), so bytes are only fetched, and only
+        cached, while that item is the one playing: an image for another item
+        is never stored under this key. Bytes pass through untouched (a
+        clearLogo keeps its PNG alpha).
+        """
+        cache_key = (kind, rating_key)
+        if cached := self._art_cache.get(cache_key):
+            self._art_cache.move_to_end(cache_key)
+            return cached
+        if inflight := self._art_inflight.get(cache_key):
+            return await inflight
+        if self._playing_key() != rating_key:
+            return None
+        player = self.data.player if self.data else None
+        path = ((player or {}).get("artwork") or {}).get(kind)
+        if not isinstance(path, str):
+            return None
+
+        future: asyncio.Future[tuple[bytes, str] | None] = self.hass.loop.create_future()
+        self._art_inflight[cache_key] = future
+        try:
+            result = await self.async_get_artwork(path)
+            if result is not None and self._playing_key() != rating_key:
+                result = None  # the item changed while we fetched
+            if result is not None and len(result[0]) <= ART_CACHE_MAX_BYTES:
+                self._art_cache[cache_key] = result
+                while len(self._art_cache) > ART_CACHE_SIZE:
+                    self._art_cache.popitem(last=False)
+            future.set_result(result)
+            return result
+        except BaseException:
+            # `async_get_artwork` never raises; only a cancellation lands
+            # here. Anyone sharing this fetch is cancelled with it.
+            future.cancel()
+            raise
+        finally:
+            self._art_inflight.pop(cache_key, None)
 
     def _block(self, seconds: int) -> None:
         self._blocked_until = _now() + seconds

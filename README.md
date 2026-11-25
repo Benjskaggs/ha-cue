@@ -118,6 +118,28 @@ What happens, in this order:
    isn't connected to, which only shows its page), the action fails with an
    error. It never reports success that didn't happen.
 
+## Couch-card art (Cue 1.2+)
+
+While something plays, the media player also carries:
+
+| Attribute | What |
+|---|---|
+| `accent_color` | The title's accent colour, `#RRGGBB` (upper-case). |
+| `entity_picture_art` | The show or movie background. |
+| `entity_picture_square` | Square art, 1080×1080 JPEG. |
+| `entity_picture_logo` | The title's clear logo, a transparent PNG served byte for byte. |
+
+The three `entity_picture_*` attributes are URLs on Home Assistant's own
+media player image proxy (`/api/media_player_proxy/<entity>/browse_media/…`).
+Load them the way you load `entity_picture`: with Home Assistant auth, or as
+they are (they carry the entity's signed `token`). Home Assistant fetches the
+image from Cue with the Cue token, so the Plex server and token never leave
+the Apple TV, and keeps it per item: each kind is fetched once per title,
+never on a poll. Each attribute appears only when the Cue build advertises
+it (`/v1/info.features`: `artwork.logo`, `artwork.square`, `colors`) and the
+title has that art; older builds look exactly as before. `entity_picture`
+itself is unchanged.
+
 ## Actions (services)
 
 All target a Cue media player. Each answers with Cue's status in the shape

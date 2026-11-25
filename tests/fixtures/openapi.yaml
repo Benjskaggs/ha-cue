@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Cue Control API
-  version: "1.1.0"
+  version: "1.2.0"
   summary: Read and drive Cue's player on an Apple TV from your home network.
   description: |
     Cue for Apple TV can listen on your local network so Home Assistant (or any
@@ -85,7 +85,7 @@ paths:
                 name: Living Room
                 app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
                 pairing: false
-                features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip]
+                features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip, artwork.logo, artwork.square, colors]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Error" }
@@ -167,8 +167,8 @@ paths:
         - name: kind
           in: path
           required: true
-          schema: { type: string, enum: [still, art, poster] }
-          description: "`still`: the episode's own frame (else the background art). `art`: the show or movie background. `poster`: the show's poster."
+          schema: { type: string, enum: [still, art, poster, logo, square] }
+          description: "`still`: the episode's own frame (else the background art). `art`: the show or movie background. `poster`: the show's poster. `logo` (1.2): the title treatment as a transparent PNG (the show's for an episode). `square` (1.2): the show or movie's square art, JPEG 1080×1080. 404 `not_found` when the title has none."
         - name: key
           in: query
           required: false
@@ -502,7 +502,9 @@ components:
             `subtitles`, `audio`, `skip`; later ones such as `stop` and
             `previous` appear when they ship). Feature-detect on these rather
             than on the version. Absent on builds before Slice B, which serve
-            exactly the list above. Names are only ever added.
+            exactly the list above. Names are only ever added. After the
+            route names come capabilities (1.2): `artwork.logo`,
+            `artwork.square` and `colors` (`player.colors` in status).
 
     AppVersion:
       type: object
@@ -591,6 +593,13 @@ components:
             still: { type: string }
             art: { type: string }
             poster: { type: string }
+            logo: { type: string, description: "1.2. Transparent PNG title treatment." }
+            square: { type: string, description: "1.2. Square art, 1080×1080." }
+        colors:
+          type: object
+          description: "1.2. The title's accent (what the player chrome tints with). Omitted until known."
+          properties:
+            accent: { type: string, pattern: "^#[0-9A-F]{6}$", example: "#4A9EFF" }
 
     Tracks:
       type: object

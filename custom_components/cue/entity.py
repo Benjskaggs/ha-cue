@@ -13,11 +13,11 @@ from .coordinator import CueCoordinator
 
 
 def entry_key(coordinator: CueCoordinator) -> str:
-    """The id entities and the device hang off.
+    """The id entities and the device hang off: the entry's unique_id.
 
-    TODO(Slice B): this is the config entry's provisional unique_id, the
-    host. Once Cue puts a stable Keychain UUID in `/v1/info.id` (and the
-    Bonjour TXT), the config flow uses that and this follows it.
+    That's Cue's stable id (`/v1/info.id`, TXT `id`) from Slice B builds on,
+    and the host for older builds. `migration.py` renames registry entries
+    when an entry moves from the host to the id.
     """
     entry = coordinator.config_entry
     return entry.unique_id or entry.entry_id

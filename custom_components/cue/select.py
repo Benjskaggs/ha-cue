@@ -24,13 +24,14 @@ async def async_setup_entry(
 ) -> None:
     """Add the selects."""
     coordinator = entry.runtime_data
-    async_add_entities(
-        [
-            CueTrackSelect(coordinator, "subtitles", allow_off=True),
-            CueTrackSelect(coordinator, "audio", allow_off=False),
-            CueSpeedSelect(coordinator),
-        ]
-    )
+    entities: list[SelectEntity] = []
+    if coordinator.has("subtitles"):
+        entities.append(CueTrackSelect(coordinator, "subtitles", allow_off=True))
+    if coordinator.has("audio"):
+        entities.append(CueTrackSelect(coordinator, "audio", allow_off=False))
+    if coordinator.has("rate"):
+        entities.append(CueSpeedSelect(coordinator))
+    async_add_entities(entities)
 
 
 def track_options(tracks: list[dict[str, Any]]) -> list[tuple[str, str]]:

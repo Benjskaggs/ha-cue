@@ -17,16 +17,17 @@ Home Assistant:
 It polls (`local_polling`, every 5 s by default). It doesn't control volume:
 that belongs to your TV or soundbar.
 
-> **Status: Slice A (MVP), for testing.** The Control API is a Developer Mode
+> **Status: Slice B, for testing.** The Control API is a Developer Mode
 > feature in Cue today, so this only works with a **Debug build** of Cue.
-> Discovery, pairing, stop/previous, search and push updates come later.
+> Pairing, search and push updates come later.
 
 ## Requirements
 
 - Home Assistant **2025.2** or newer.
 - Cue on an Apple TV on the **same LAN** as Home Assistant. Cue refuses
-  requests from public addresses, and from global IPv6 addresses (use the
-  Apple TV's IPv4 address).
+  requests from public addresses. Builds before Slice B also refuse global
+  IPv6 addresses (use the IPv4 address); newer ones accept global IPv6
+  addresses on the Apple TV's own network.
 - Optional, for Play Media and starting Cue when it's closed: Home Assistant's
   built-in [Apple TV integration](https://www.home-assistant.io/integrations/apple_tv/)
   set up for the same Apple TV.
@@ -50,11 +51,23 @@ Or by hand: copy `custom_components/cue` into your config's
 
 ## Add the Apple TV
 
-**Settings › Devices & services › Add integration › Cue**
+With Cue open on the Apple TV, Home Assistant **discovers it** (Bonjour
+`_cue-control._tcp`) and shows it under **Settings › Devices & services ›
+Discovered**. Choose **Add** and paste the token. Cue only advertises while
+it's on screen (tvOS suspends it in the background), so open Cue first.
+
+Or add it by hand: **Add integration › Cue**.
 
 1. **Host**: the Apple TV's IP address. **Port**: leave 7788.
 2. **Token**: paste the token from Cue. Case and dashes don't matter, and a
    leading `Bearer ` is stripped.
+
+Cue builds with a stable device id (from Slice B) are tracked by that id, so
+an IP change is picked up the next time Home Assistant sees the Apple TV
+advertise. An entry added for an older build was keyed on its IP; it moves
+to the id on its own once the Apple TV runs a newer Cue (entity ids, names
+and history are kept). An older build also raises a **Cue is out of date**
+notice in Settings › Repairs.
 
 Then open the integration's **Configure** to set:
 
@@ -72,6 +85,13 @@ card for Cue). It never retries a wrong
 token: Cue locks an address out for 5 minutes after 10 wrong tokens in a
 minute, and that would also lock out anything else on the same Home
 Assistant host (rest_commands, scripts).
+
+## What appears depends on the Cue build
+
+Cue lists what it can do in `/v1/info.features`, and the integration only
+creates what the build serves: Stop shows up once Cue serves `stop`,
+Previous once it serves `previous`. Builds that don't list features get the
+Slice A set.
 
 ## Play Media
 

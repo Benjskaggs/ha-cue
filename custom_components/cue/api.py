@@ -82,8 +82,10 @@ class CueClient:
         self.base_url = f"http://{bracketed}:{port}"
 
     async def get_info(self) -> dict[str, Any]:
-        """`GET /v1/info` (no token)."""
-        return await self._json("GET", "/v1/info", auth=False)
+        """`GET /v1/info`. Needs no token, but sends one when it has it: from
+        Slice B, Cue lets a known-good token through an address lockout,
+        unauthenticated calls included."""
+        return await self._json("GET", "/v1/info", auth=None)
 
     async def get_status(self) -> dict[str, Any]:
         """`GET /v1/status`."""
@@ -110,7 +112,7 @@ class CueClient:
         path: str,
         *,
         body: dict[str, Any] | None = None,
-        auth: bool = True,
+        auth: bool | None = True,
     ) -> dict[str, Any]:
         status, headers, raw = await self._request(method, path, body=body, auth=auth)
         if status != 200:
@@ -129,12 +131,13 @@ class CueClient:
         path: str,
         *,
         body: dict[str, Any] | None = None,
-        auth: bool = True,
+        auth: bool | None = True,
     ) -> tuple[int, Mapping[str, str], bytes]:
+        """`auth`: True requires the token, None sends it if there is one."""
         headers = {"Accept": "application/json"}
-        if auth:
-            if not self._token:
-                raise CueAuthError(401, "unauthorized", "No token configured")
+        if auth and not self._token:
+            raise CueAuthError(401, "unauthorized", "No token configured")
+        if auth is not False and self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         try:
             async with self._session.request(

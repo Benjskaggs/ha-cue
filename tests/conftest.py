@@ -58,12 +58,19 @@ async def fake_cue(socket_enabled: None) -> AsyncGenerator[FakeCue]:
     await fake.close()
 
 
-def make_entry(fake: FakeCue, *, token: str = TOKEN, options: dict[str, Any] | None = None) -> MockConfigEntry:
-    """A config entry pointing at the fake."""
+def make_entry(
+    fake: FakeCue,
+    *,
+    token: str = TOKEN,
+    options: dict[str, Any] | None = None,
+    unique_id: str | None = None,
+) -> MockConfigEntry:
+    """A config entry pointing at the fake. Keyed on the host by default, as
+    Slice A made them (setup then adopts the fake's stable id)."""
     return MockConfigEntry(
         domain=DOMAIN,
         title="Living Room",
-        unique_id=fake.host,
+        unique_id=unique_id or fake.host,
         data={
             CONF_HOST: fake.host,
             CONF_PORT: fake.port,

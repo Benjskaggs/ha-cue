@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from ipaddress import IPv4Address, IPv6Address
 import logging
 from typing import Any
 
@@ -17,6 +18,7 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_SCAN_INTER
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from .api import (
     CueAuthError,
@@ -66,6 +68,19 @@ def _error_key(err: CueError) -> str:
     return "unknown"
 
 
+def _pick_host(info: ZeroconfServiceInfo) -> str | None:
+    """IPv4 first (what Cue's peer check has always accepted), then a
+    routable IPv6. Never a link-local IPv6: it needs a scope id HA can't use."""
+    addresses = list(info.ip_addresses) or [info.ip_address]
+    for address in addresses:
+        if isinstance(address, IPv4Address):
+            return str(address)
+    for address in addresses:
+        if isinstance(address, IPv6Address) and not (address.is_link_local or address.is_loopback):
+            return str(address)
+    return None
+
+
 class CueConfigFlow(ConfigFlow, domain=DOMAIN):
     """Add an Apple TV running Cue."""
 
@@ -86,18 +101,12 @@ class CueConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: where the Apple TV is. Checks `GET /v1/info` (no token)."""
+        """Step 1: where the Apple TV is. Checks `GET /v1/info` (no token),
+        and keys the entry on its stable id when the build has one."""
         errors: dict[str, str] = {}
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
             port = int(user_input.get(CONF_PORT, DEFAULT_PORT))
-            # TODO(Slice B): the host is a provisional unique_id. Cue has no
-            # stable id yet; Slice B adds a Keychain UUID to `/v1/info.id` and
-            # the Bonjour TXT, and this switches to it (with zeroconf keeping
-            # the host current).
-            await self.async_set_unique_id(host)
-            self._abort_if_unique_id_configured()
-
             client = CueClient(async_get_clientsession(self.hass), host, port)
             try:
                 info = await client.get_info()
@@ -108,6 +117,9 @@ class CueConfigFlow(ConfigFlow, domain=DOMAIN):
                 if info.get("api") != 1:
                     errors["base"] = "not_cue"
                 else:
+                    device_id = info.get("id") if isinstance(info.get("id"), str) else None
+                    if abort := await self._async_claim(host, port, device_id):
+                        return abort
                     self._host, self._port, self._info = host, port, info
                     return await self.async_step_token()
 
@@ -127,6 +139,56 @@ class CueConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders=self._placeholders,
         )
+
+    async def async_step_zeroconf(
+        self, discovery_info: ZeroconfServiceInfo
+    ) -> ConfigFlowResult:
+        """Found `_cue-control._tcp` on the LAN (only while Cue is frontmost:
+        tvOS suspends it, and the advertisement, in the background)."""
+        props = discovery_info.properties
+        api = props.get("api") or props.get("v")
+        if api is not None and str(api) != "1":
+            return self.async_abort(reason="unsupported_api")
+        host = _pick_host(discovery_info)
+        if host is None:
+            return self.async_abort(reason="no_usable_address")
+        port = discovery_info.port or DEFAULT_PORT
+        device_id = props.get("id") or None
+        name = props.get("name") or discovery_info.name.split(".")[0] or DEFAULT_NAME
+
+        if abort := await self._async_claim(host, port, device_id):
+            return abort
+        self._host, self._port = host, port
+        self._info = {"name": name, "id": device_id, "app": {"version": props.get("app")}}
+        self.context["title_placeholders"] = {"name": name}
+        return await self.async_step_token()
+
+    async def _async_claim(
+        self, host: str, port: int, device_id: str | None
+    ) -> ConfigFlowResult | None:
+        """Set this flow's unique_id, or abort for an Apple TV already added.
+
+        A Slice B build has a stable `id`: that's the unique_id, and an entry
+        that already has it gets the current host and port (an IP change).
+        An entry added before Cue had ids is keyed on its host: it adopts the
+        id here (its entities are renamed on the reload). Older builds have
+        no id, so the host stays the key.
+        """
+        if not device_id:
+            await self.async_set_unique_id(host)
+            self._abort_if_unique_id_configured(updates={CONF_PORT: port})
+            return None
+        await self.async_set_unique_id(device_id)
+        self._abort_if_unique_id_configured(updates={CONF_HOST: host, CONF_PORT: port})
+        legacy = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, host)
+        if legacy is not None:
+            return self.async_update_reload_and_abort(
+                legacy,
+                unique_id=device_id,
+                data_updates={CONF_HOST: host, CONF_PORT: port},
+                reason="already_configured",
+            )
+        return None
 
     async def async_step_token(
         self, user_input: dict[str, Any] | None = None

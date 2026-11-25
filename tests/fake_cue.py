@@ -2,9 +2,13 @@
 
 It is a real aiohttp server on 127.0.0.1, so the integration's client runs
 unmodified. It mirrors the server's gate order (`ControlServer.swift`):
-rate limit → disabled → token, with the same per-IP failed-auth limiter
-(10 wrong tokens a minute → 429 for 5 minutes), so tests can prove the
-integration never retries a bad token.
+rate limit → disabled → token. Its failed-auth limiter is deliberately the
+strict pre-Slice-B one (any 10 wrong tokens a minute lock the whole address
+for 5 minutes): the worst case, so tests prove the integration never retries
+a bad token whatever build it meets.
+
+By default it's a Slice B build (`/v1/info` has `id` and `features`);
+`legacy()` turns it into an older one.
 """
 
 from __future__ import annotations
@@ -22,7 +26,11 @@ JPEG = b"\xff\xd8\xff\xe0fake-jpeg\xff\xd9"
 
 APP = {"version": "1.2", "build": "2026.1125.900", "platform": "tvOS"}
 
-INFO = {"api": 1, "name": "Living Room", "app": APP, "pairing": False}
+DEVICE_ID = "3f2a5c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b"
+FEATURES = ["info", "status", "artwork", "play", "pause", "toggle", "restart", "next",
+            "seek", "rate", "subtitles", "audio", "skip"]
+INFO = {"api": 1, "id": DEVICE_ID, "name": "Living Room", "app": APP, "pairing": False,
+        "features": FEATURES}
 
 IDLE = {
     "api": 1,
@@ -106,7 +114,8 @@ class FakeCue:
 
     COMMANDS = ("play", "pause", "toggle", "restart", "next", "seek", "rate", "subtitles", "audio", "skip")
 
-    def __init__(self) -> None:
+    def __init__(self, extra_commands: tuple[str, ...] = ()) -> None:
+        self.extra_commands = extra_commands
         self.token = TOKEN
         self.status: dict[str, Any] = copy.deepcopy(IDLE)
         self.info: dict[str, Any] = copy.deepcopy(INFO)
@@ -116,6 +125,8 @@ class FakeCue:
         self.failed_auth = 0
         # (method, path, body) for every request that reached a handler.
         self.requests: list[tuple[str, str, Any]] = []
+        # (path, Authorization header or None), same order.
+        self.auth_headers: list[tuple[str, str | None]] = []
         self.host = "127.0.0.1"
         self.port = 0  # picked on first start()
         self._runner: web.AppRunner | None = None
@@ -155,6 +166,11 @@ class FakeCue:
     def idle(self) -> None:
         self.status = copy.deepcopy(IDLE)
 
+    def legacy(self) -> None:
+        """A build before Slice B: no `id`, no `features`."""
+        self.info.pop("id", None)
+        self.info.pop("features", None)
+
     @property
     def player(self) -> dict[str, Any] | None:
         return self.status["player"]
@@ -172,7 +188,7 @@ class FakeCue:
         app.router.add_get("/v1/info", self._info)
         app.router.add_get("/v1/status", self._status)
         app.router.add_get("/v1/artwork/{kind}", self._artwork)
-        for name in self.COMMANDS:
+        for name in (*self.COMMANDS, *self.extra_commands):
             app.router.add_post(f"/v1/player/{name}", self._command)
         return app
 
@@ -189,6 +205,7 @@ class FakeCue:
                     response.force_close()
                     return response
         self.requests.append((request.method, request.path, body))
+        self.auth_headers.append((request.path, request.headers.get("Authorization")))
         request["body"] = body if body is not None else {}
         response = await self._gated(request, handler)
         response.force_close()  # Cue answers one request per connection
@@ -259,6 +276,9 @@ class FakeCue:
             p["state"] = "paused" if p["state"] == "playing" else "playing"
         elif name == "restart":
             p["positionMs"] = 0
+        elif name == "stop":
+            self.idle()
+            return web.json_response(self.status)
         elif name == "next":
             nxt = p["queue"].get("next")
             if not nxt:

@@ -40,8 +40,11 @@
     },
     "abort": {
       "already_configured": "This Apple TV is already set up.",
-      "reauth_successful": "Token updated."
-    }
+      "reauth_successful": "Token updated.",
+      "unsupported_api": "This Apple TV runs a Cue Control API version this integration doesn't speak. Update the integration.",
+      "no_usable_address": "The Apple TV was found, but only at a link-local IPv6 address Home Assistant can't use. Add it by its IPv4 address instead."
+    },
+    "flow_title": "{name}"
   },
   "options": {
     "step": {
@@ -120,6 +123,12 @@
     },
     "play_not_started": {
       "message": "Sent {url} to Cue, but it didn't start playing within {seconds} s."
+    }
+  },
+  "issues": {
+    "outdated_cue": {
+      "title": "Cue on {name} is out of date",
+      "description": "Cue {version} on {name} predates the Control API's stable device id and feature list. It still works, but:\n\n- Home Assistant keys it by IP address, so an address change breaks the entry until you update it.\n- One client on this Home Assistant host with a stale token can lock every client on the host out of Cue for 5 minutes.\n\nUpdate Cue on the Apple TV. This notice clears itself the next time a newer Cue answers."
     }
   }
 }

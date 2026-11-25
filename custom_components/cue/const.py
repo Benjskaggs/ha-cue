@@ -31,5 +31,16 @@ SPEEDS: Final = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
 
 SUBTITLES_OFF: Final = "Off"
 
+# Every v1 route a build before Slice B serves. Those builds don't send
+# `/v1/info.features`, so this is what the integration assumes for them (and
+# for any build it hasn't been able to ask yet).
+LEGACY_FEATURES: Final = frozenset(
+    {"info", "status", "artwork", "play", "pause", "toggle", "restart", "next",
+     "seek", "rate", "subtitles", "audio", "skip"}
+)
+
+# The repair issue raised for a pre-Slice-B build (no `features`, no `id`).
+ISSUE_OUTDATED: Final = "outdated_cue"
+
 # The app name HA's `apple_tv` integration reports, and the source to select.
 APPLE_TV_APP_NAME: Final = "Cue"

@@ -18,10 +18,11 @@ from .api import (
     CueAuthError,
     CueClient,
     CueConnectionError,
+    CueError,
     CueRateLimitedError,
     CueResponseError,
 )
-from .const import DOMAIN
+from .const import DOMAIN, LEGACY_FEATURES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +55,32 @@ class CueData:
         return player if isinstance(player, dict) else None
 
 
+@dataclass(frozen=True, slots=True)
+class CueInfo:
+    """`GET /v1/info`, as far as the integration cares."""
+
+    device_id: str | None
+    name: str | None
+    version: str | None
+    features: frozenset[str]
+    # False for builds before Slice B, which send neither `features` nor `id`.
+    lists_features: bool
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> CueInfo:
+        raw = data.get("features")
+        listed = isinstance(raw, list)
+        device_id = data.get("id")
+        app = data.get("app") if isinstance(data.get("app"), dict) else {}
+        return cls(
+            device_id=device_id if isinstance(device_id, str) and device_id else None,
+            name=data.get("name") if isinstance(data.get("name"), str) else None,
+            version=app.get("version"),
+            features=frozenset(str(f) for f in raw) if listed else LEGACY_FEATURES,
+            lists_features=listed,
+        )
+
+
 class CueCoordinator(DataUpdateCoordinator[CueData]):
     """Owns the client, the poll, and the per-entry command queue."""
 
@@ -82,6 +109,51 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         # Bumped whenever a command reply is applied, so a poll that was in
         # flight across a command can't overwrite the fresher reply.
         self._generation = 0
+        # `/v1/info`, once Cue has answered it (None until then: Cue wasn't
+        # open at setup). Entities are built from `features`.
+        self.info: CueInfo | None = None
+        self._late_info_started = False
+        self.options_at_setup = dict(entry.options)
+
+    def has(self, feature: str) -> bool:
+        """Whether this build serves the v1 route `feature` (`stop`, …)."""
+        features = self.info.features if self.info else LEGACY_FEATURES
+        return feature in features
+
+    async def async_fetch_info(self) -> CueInfo | None:
+        """Ask Cue who it is. None when it isn't open (or won't say)."""
+        try:
+            self.info = CueInfo.from_json(await self.client.get_info())
+        except CueError as err:
+            _LOGGER.debug("No /v1/info from Cue: %s", err)
+            return None
+        return self.info
+
+    def needs_reload_for(self, info: CueInfo) -> bool:
+        """Entities were built without `info`: reload if it changes them.
+
+        That's a stable id to adopt (the entry was keyed on the host) or a
+        feature set other than the one assumed.
+        """
+        entry = self.config_entry
+        if info.device_id and entry.unique_id != info.device_id:
+            other = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, info.device_id)
+            if other is None:
+                return True
+        return info.features != LEGACY_FEATURES
+
+    async def _async_late_info(self) -> None:
+        """Cue wasn't open at setup; now it is. Learn it, reload if needed."""
+        # Imported here: issues imports this module's types.
+        from .issues import async_sync_outdated_issue
+
+        info = await self.async_fetch_info()
+        if info is None:
+            self._late_info_started = False
+            return
+        async_sync_outdated_issue(self.hass, self.config_entry, info)
+        if self.needs_reload_for(info):
+            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
 
     async def _async_update_data(self) -> CueData:
         if self.auth_failed:
@@ -107,6 +179,11 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
             # talk to us. Unavailable, logged once by the coordinator.
             raise UpdateFailed(f"Cue answered {err.status} {err.code}: {err.message}") from err
 
+        if self.info is None and not self._late_info_started:
+            self._late_info_started = True
+            self.config_entry.async_create_background_task(
+                self.hass, self._async_late_info(), f"{DOMAIN} info"
+            )
         if generation != self._generation and self.data is not None:
             return self.data
         return CueData(reachable=True, status=status)

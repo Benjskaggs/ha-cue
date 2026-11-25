@@ -10,7 +10,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from custom_components.cue.const import CONF_APPLE_TV_ENTITY, DOMAIN
 
 from .conftest import ATV_ENTITY, FakeAppleTV, make_entry, setup_entry
-from .fake_cue import TOKEN, FakeCue, _free_port
+from .fake_cue import DEVICE_ID, TOKEN, FakeCue, _free_port
 
 
 async def _start(hass: HomeAssistant):
@@ -46,7 +46,8 @@ async def test_full_flow(hass: HomeAssistant, fake_cue: FakeCue) -> None:
         CONF_NAME: "Living Room",
         "app_version": "1.2",
     }
-    assert result["result"].unique_id == fake_cue.host
+    # A Slice B build: keyed on its stable id, not the host.
+    assert result["result"].unique_id == DEVICE_ID
     assert fake_cue.paths()[:2] == ["/v1/info", "/v1/status"]
 
 
@@ -126,7 +127,7 @@ async def test_bad_token_tried_once(hass: HomeAssistant, fake_cue: FakeCue) -> N
 
 
 async def test_already_configured(hass: HomeAssistant, fake_cue: FakeCue) -> None:
-    """The same host twice aborts before any request."""
+    """The same Apple TV twice aborts after one unauthenticated request."""
     make_entry(fake_cue).add_to_hass(hass)
     result = await _start(hass)
     result = await hass.config_entries.flow.async_configure(
@@ -134,7 +135,7 @@ async def test_already_configured(hass: HomeAssistant, fake_cue: FakeCue) -> Non
     )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    assert fake_cue.requests == []
+    assert fake_cue.paths() == ["/v1/info"]
 
 
 async def test_reauth(hass: HomeAssistant, fake_cue: FakeCue) -> None:

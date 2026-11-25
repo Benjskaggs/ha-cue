@@ -35,6 +35,14 @@ async def async_get_config_entry_diagnostics(
             if coordinator.update_interval
             else None,
         },
+        "info": {
+            "id": coordinator.info.device_id,
+            "version": coordinator.info.version,
+            "features": sorted(coordinator.info.features),
+            "lists_features": coordinator.info.lists_features,
+        }
+        if coordinator.info
+        else None,
         "reachable": data.reachable if data else None,
         "status": async_redact_data(data.status, TO_REDACT) if data and data.status else None,
     }

@@ -67,7 +67,11 @@ async def async_setup_entry(
 ) -> None:
     """Add the buttons."""
     coordinator = entry.runtime_data
-    async_add_entities(CueButton(coordinator, description) for description in BUTTONS)
+    async_add_entities(
+        CueButton(coordinator, description)
+        for description in BUTTONS
+        if coordinator.has(description.command)
+    )
 
 
 class CueButton(CueEntity, ButtonEntity):

@@ -75,10 +75,12 @@ TYPE_MAP = {
 }
 
 SLEEPING_STATES = {STATE_OFF, STATE_STANDBY, STATE_UNAVAILABLE, STATE_UNKNOWN}
-BASE_FEATURES = (
-    MediaPlayerEntityFeature.PLAY
-    | MediaPlayerEntityFeature.PAUSE
-    | MediaPlayerEntityFeature.SEEK
+# HA feature ← the Cue route (`/v1/info.features`) it needs.
+ROUTE_FEATURES = (
+    ("play", MediaPlayerEntityFeature.PLAY),
+    ("pause", MediaPlayerEntityFeature.PAUSE),
+    ("seek", MediaPlayerEntityFeature.SEEK),
+    ("stop", MediaPlayerEntityFeature.STOP),
 )
 
 _RATING_KEY = re.compile(r"^\d+$")
@@ -153,13 +155,20 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
 
     @property
     def supported_features(self) -> MediaPlayerEntityFeature:
-        """Next only when Cue has a next episode; play_media only when linked."""
-        features = BASE_FEATURES
+        """What this Cue build serves (`features`), next/previous only when
+        Cue has one queued, play_media only with a linked apple_tv."""
+        has = self.coordinator.has
+        features = MediaPlayerEntityFeature(0)
+        for route, feature in ROUTE_FEATURES:
+            if has(route):
+                features |= feature
         if self._apple_tv_entity:
             features |= MediaPlayerEntityFeature.PLAY_MEDIA
-        player = self.player
-        if player and (player.get("queue") or {}).get("next"):
+        queue = (self.player or {}).get("queue") or {}
+        if queue.get("next") and has("next"):
             features |= MediaPlayerEntityFeature.NEXT_TRACK
+        if queue.get("previous") and has("previous"):
+            features |= MediaPlayerEntityFeature.PREVIOUS_TRACK
         return features
 
     @property
@@ -271,6 +280,8 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
     @property
     def media_image_hash(self) -> str | None:
         """Changes with the item, so HA's proxy re-fetches."""
+        if not self.coordinator.has("artwork"):
+            return None
         path = self._artwork_path()
         if path is None:
             return None
@@ -305,6 +316,14 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
     async def async_media_next_track(self) -> None:
         """Next episode."""
         await self.coordinator.async_command("next")
+
+    async def async_media_previous_track(self) -> None:
+        """Previous episode (builds that list `previous`)."""
+        await self.coordinator.async_command("previous")
+
+    async def async_media_stop(self) -> None:
+        """Close the player (builds that list `stop`)."""
+        await self.coordinator.async_command("stop")
 
     # MARK: play_media, cold start through HA's apple_tv integration
 

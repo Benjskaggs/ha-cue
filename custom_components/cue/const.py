@@ -58,6 +58,22 @@ SUBTITLE_OFFSET_LIMIT: Final = 20.0
 FEATURE_SEARCH: Final = "search"
 FEATURE_OPEN: Final = "open"
 FEATURE_CONTINUE: Final = "continueWatching"
+# Slice E (Cue 1.2.1): push.
+FEATURE_EVENTS: Final = "events"
+# Cue sends a keepalive every 15 s; two missed is a dead stream.
+EVENTS_READ_TIMEOUT: Final = 40
+# While the stream is up, a slow poll still runs as a safety net.
+STREAMING_SCAN_INTERVAL: Final = 60
+# After a stream is refused (busy, an error), wait this long before trying
+# again; polling carries on meanwhile.
+STREAM_RETRY_AFTER: Final = 60
+# The bus event, and what the event entity and device triggers offer.
+EVENT_CUE: Final = "cue_event"
+EVENT_TYPES: Final = (
+    "started", "paused", "resumed", "stopped", "ended", "item_changed",
+    "intro_started", "credits_started", "foreground_lost",
+)
+
 # media_content_id values for the browse tree.
 BROWSE_ROOT: Final = "cue_root"
 BROWSE_CONTINUE: Final = "cue_continue"

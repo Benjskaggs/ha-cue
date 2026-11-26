@@ -13,10 +13,14 @@ Home Assistant:
 | `button.<tv>_skip_intro`, `button.<tv>_skip_credits` | Available only while Cue says the marker can be skipped |
 | `button.<tv>_restart` | Back to the start |
 | `number.<tv>_subtitle_timing` | Subtitle delay in seconds, ±20 (positive = later). This stream only; available while subtitles are on. Cue 1.2.1+. |
+| `event.<tv>_playback` | Fires `started`, `paused`, `resumed`, `stopped` (player closed), `ended`, `item_changed`, `intro_started`, `credits_started`, `foreground_lost`, with the title, series, season and episode. Also on the bus as `cue_event`, and as device triggers. |
 | `binary_sensor.<tv>_cue_open` | On while Cue answers on the LAN and is on screen. The best automation trigger. Attribute `screen`: `player`, or the tab (`home`, `search`, …), on Cue 1.2.1+. |
 
-It polls (`local_polling`, every 5 s by default). It doesn't control volume:
-that belongs to your TV or soundbar.
+From Cue 1.2.1 it follows Cue's event stream (`local_push`): changes land
+within half a second, and a slow poll (every 60 s) runs as a safety net.
+With older builds, or when the stream drops, it polls (every 5 s by
+default) and works out the same events from the poll, up to a poll late.
+It doesn't control volume: that belongs to your TV or soundbar.
 
 > **Status: for testing.** Home Assistant Control is a regular setting from
 > Cue 1.2.1 (Settings › Connection); earlier App Store builds don't listen.
@@ -127,6 +131,25 @@ in this order:
    If it doesn't within 25 s (for example the item is on a Plex server Cue
    isn't connected to, which only shows its page), the action fails with an
    error. It never reports success that didn't happen.
+
+## Automations
+
+Use the device triggers (device page › Automations), or the event entity:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: event.living_room_playback
+    attribute: event_type
+    to: credits_started
+actions:
+  - action: light.turn_on
+    target: { entity_id: light.living_room }
+```
+
+`foreground_lost` fires when Cue leaves the screen (another app, the TV
+asleep), once. With Cue 1.2.1 the intro and credits events fire within
+half a second of the marker; on older builds, up to a poll late.
 
 ## Search, voice and the media browser (Cue 1.2.1+)
 

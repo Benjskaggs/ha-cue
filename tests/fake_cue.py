@@ -16,8 +16,10 @@ language bodies, `status.app`). `before_slice_c()` makes it a 1.2 build;
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 import copy
+import json
 from datetime import UTC, datetime
 import socket
 import struct
@@ -42,6 +44,9 @@ C_CAPABILITIES = ["subtitles.language", "subtitles.enabled", "audio.language", "
 C_FEATURES = C_ROUTES + C_CAPABILITIES
 # Slice D (1.2.1): search, open, Continue Watching.
 D_ROUTES = ["search", "open", "continueWatching"]
+# Slice E (1.2.1): push. Off in the fake unless a test calls
+# `enable_events()`: a stream outlives a test that doesn't expect one.
+E_ROUTES = ["events"]
 ACCENT = "#E0A030"
 
 
@@ -185,6 +190,9 @@ class FakeCue:
         self.open_outcome: str | None = None
         self.last_open: dict[str, Any] | None = None
         self.signed_in = True
+        # Slice E: one queue per open event stream (None ends it).
+        self._streams: list[asyncio.Queue[bytes | None]] = []
+        self.refuse_streams: tuple[int, str] | None = None
         # Called inside an artwork request, before it answers (tests use it
         # to change the item mid-fetch).
         self.on_artwork: Callable[[], None] | None = None
@@ -204,6 +212,7 @@ class FakeCue:
 
     async def go_away(self) -> None:
         """tvOS suspended Cue: the listener is gone."""
+        self.end_streams()
         if self._site is not None:
             await self._site.stop()
             self._site = None
@@ -212,6 +221,8 @@ class FakeCue:
         await self.start()
 
     async def close(self) -> None:
+        self.end_streams()
+        await asyncio.sleep(0)
         await self.go_away()
         if self._runner is not None:
             await self._runner.cleanup()
@@ -233,6 +244,30 @@ class FakeCue:
     def before_slice_c(self) -> None:
         """A 1.2 build: art, but nothing from 1.2.1."""
         self.drop_features(C_FEATURES + D_ROUTES)
+
+    def enable_events(self) -> None:
+        if "features" in self.info and "events" not in self.info["features"]:
+            self.info["features"].append("events")
+
+    @property
+    def stream_count(self) -> int:
+        return len(self._streams)
+
+    def push(self, event: str, data: dict[str, Any]) -> None:
+        frame = f"event: {event}\nid: 1\ndata: {json.dumps(data)}\n\n".encode()
+        for queue in self._streams:
+            queue.put_nowait(frame)
+
+    def push_status(self) -> None:
+        self.push("status", self.snapshot())
+
+    def push_raw(self, raw: bytes) -> None:
+        for queue in self._streams:
+            queue.put_nowait(raw)
+
+    def end_streams(self) -> None:
+        for queue in self._streams:
+            queue.put_nowait(None)
 
     def before_slice_d(self) -> None:
         """A 1.2.1 build with slice C only: no search, open or Continue Watching."""
@@ -279,7 +314,29 @@ class FakeCue:
         app.router.add_get("/v1/search", self._search)
         app.router.add_get("/v1/hubs/continue", self._continue)
         app.router.add_post("/v1/open", self._open)
+        app.router.add_get("/v1/events", self._events)
         return app
+
+    # MARK: events (slice E)
+
+    async def _events(self, request: web.Request) -> web.StreamResponse:
+        if not self.has("events"):
+            return _error(404, "not_found", "No route /v1/events.")
+        if self.refuse_streams:
+            status, code = self.refuse_streams
+            return _error(status, code, "Refused.")
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream; charset=utf-8"})
+        await response.prepare(request)
+        queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._streams.append(queue)
+        try:
+            await response.write(b": connected\n\n")
+            await response.write(f"event: status\nid: 1\ndata: {json.dumps(self.snapshot())}\n\n".encode())
+            while (frame := await queue.get()) is not None:
+                await response.write(frame)
+        finally:
+            self._streams.remove(queue)
+        return response
 
     # MARK: library (slice D)
 

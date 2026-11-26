@@ -18,7 +18,8 @@ info:
       `name=<Apple TV name>`, `app=<Cue version>`. Nothing about auth state.
     - **Cue must be open.** tvOS suspends Cue soon after it leaves the
       foreground; a refused connection means "Cue isn't open".
-    - **One request per connection**; the server closes after each reply.
+    - **One request per connection**; the server closes after each reply
+      (except `GET /v1/events`, which stays open).
     - **Auth:** `Authorization: Bearer <token>` on everything except
       `GET /v1/info`. The token is never accepted in a query string. Generate
       one in Settings (`K7QM-2XRA-…`; case and dashes don't matter) or type
@@ -58,6 +59,8 @@ tags:
   - name: player
   - name: library
     description: Search, open and Continue Watching (1.2.1). They answer for the Plex server Cue is connected to; 503 `signed_out` while Cue isn't connected.
+  - name: events
+    description: Push (1.2.1). One long-lived stream instead of polling.
   - name: legacy
     description: |
       The 1.0 interface, frozen. Parameters may come from the query string or
@@ -88,7 +91,7 @@ paths:
                 app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
                 pairing: false
                 features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip,
-                           stop, previous, subtitleOffset, search, open, continueWatching,
+                           stop, previous, subtitleOffset, search, open, continueWatching, events,
                            artwork.logo, artwork.square, colors, subtitles.language, subtitles.enabled, audio.language, status.app]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -531,6 +534,60 @@ paths:
         "502": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 
+  /v1/events:
+    get:
+      tags: [events]
+      operationId: events
+      summary: A Server-Sent Events stream of status changes (1.2.1).
+      description: |
+        `text/event-stream`, open until either side closes (no
+        Content-Length; the body ends when the connection does). The token
+        goes in the header, as everywhere; never in the URL.
+
+        Frames:
+        - `: connected` first, then `event: status` with the full status.
+        - `event: status`, data = the full status (same as `/v1/status`),
+          whenever anything but the position changes: play state, item,
+          tracks, a marker's `active`/`skippable`, the queue, `app`,
+          `lastOpen`.
+        - `event: marker`, data `{type, phase, ratingKey}`: `phase` is
+          `started` or `ended` as playback enters or leaves the intro or
+          credits. Sent right after the status that shows it.
+        - `event: position`, data `{positionMs, positionAt, rate, state}`: on
+          a jump of more than 2 s, and every 15 s while playing. In between,
+          extrapolate from `positionAt` and `rate`.
+        - `event: open`, data = `lastOpen`, when a `/v1/open` changes.
+        - `event: app`, data `{"foreground": false}`: Cue is leaving the
+          foreground. The stream closes right after; poll (or retry the
+          stream) until Cue answers again.
+        - `: keepalive` comments every 15 s.
+
+        Each event has an increasing `id` per stream. There's no replay: a
+        new stream starts with a full status. Changes are sampled twice a
+        second. At most 4 streams (503 `busy`); a stream that stops reading
+        for 5 s is closed. A refused connection means Cue isn't open.
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              schema: { type: string }
+              example: |
+                : connected
+
+                event: status
+                id: 1
+                data: {"api":1,"app":{...},"player":{...}}
+
+                event: marker
+                id: 2
+                data: {"phase":"started","ratingKey":"12345","type":"intro"}
+
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
   # --- legacy (frozen 1.0 interface) ---------------------------------------
 
   /status:
@@ -668,10 +725,11 @@ components:
         409 nothing_playing, no_marker, no_next, no_previous, consent_required,
         pairing_pending, unsupported · 413 payload_too_large ·
         429 rate_limited · 501 not_implemented · 502 upstream ·
-        503 disabled, signed_out. Codes are only ever added.
+        503 disabled, signed_out, busy (1.2.1: every event stream taken).
+        Codes are only ever added.
       enum: [bad_request, invalid_parameter, unauthorized, not_lan, not_found, unknown_track, method_not_allowed,
              nothing_playing, no_marker, no_next, no_previous, consent_required, pairing_pending, unsupported,
-             payload_too_large, rate_limited, not_implemented, upstream, disabled, signed_out]
+             payload_too_large, rate_limited, not_implemented, upstream, disabled, signed_out, busy]
 
     Info:
       type: object
@@ -696,7 +754,7 @@ components:
             One name per v1 route this build serves (`info`, `status`, `artwork`,
             `play`, `pause`, `toggle`, `restart`, `next`, `seek`, `rate`,
             `subtitles`, `audio`, `skip`; 1.2.1 adds `stop`, `previous`,
-            `subtitleOffset`, `search`, `open`, `continueWatching`). Feature-detect on these rather than on the
+            `subtitleOffset`, `search`, `open`, `continueWatching`, `events`). Feature-detect on these rather than on the
             version. Absent on builds before Slice B, which serve
             `info` … `skip`. Names are only ever added. After the route names
             come capabilities: `artwork.logo`, `artwork.square` and `colors`

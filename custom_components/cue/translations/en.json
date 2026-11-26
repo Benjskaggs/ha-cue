@@ -98,6 +98,26 @@
       "subtitle_offset": {
         "name": "Subtitle timing"
       }
+    },
+    "event": {
+      "playback": {
+        "name": "Playback",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "started": "Playback started",
+              "paused": "Paused",
+              "resumed": "Resumed",
+              "stopped": "Player closed",
+              "ended": "Finished",
+              "item_changed": "Next item started",
+              "intro_started": "Intro started",
+              "credits_started": "Credits started",
+              "foreground_lost": "Cue left the screen"
+            }
+          }
+        }
+      }
     }
   },
   "exceptions": {
@@ -271,6 +291,19 @@
     "continue_watching": {
       "name": "Continue Watching",
       "description": "Cue Home's Continue Watching row: what's part-watched or next up, each with the media_content_id to pass to media_player.play_media."
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "started": "Playback started",
+      "paused": "Paused",
+      "resumed": "Resumed",
+      "stopped": "Player closed",
+      "ended": "Finished",
+      "item_changed": "Next item started",
+      "intro_started": "Intro started",
+      "credits_started": "Credits started",
+      "foreground_lost": "Cue left the screen"
     }
   }
 }

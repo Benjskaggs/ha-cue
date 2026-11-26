@@ -31,6 +31,7 @@ async def async_get_config_entry_diagnostics(
             if coordinator.last_exception
             else None,
             "auth_failed": coordinator.auth_failed,
+            "streaming": coordinator.streaming,
             "update_interval_s": coordinator.update_interval.total_seconds()
             if coordinator.update_interval
             else None,

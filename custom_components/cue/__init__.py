@@ -18,6 +18,7 @@ from .migration import async_adopt_device_id, async_migrate_registries
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.BUTTON,
+    Platform.EVENT,
     Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SELECT,

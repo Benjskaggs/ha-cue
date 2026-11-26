@@ -1,4 +1,5 @@
-"""Polls Cue's `/v1/status` and carries player commands."""
+"""Polls Cue's `/v1/status` (or follows its `/v1/events` stream) and carries
+player commands."""
 
 from __future__ import annotations
 
@@ -11,8 +12,11 @@ import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+import copy
+
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -24,7 +28,18 @@ from .api import (
     CueRateLimitedError,
     CueResponseError,
 )
-from .const import ART_CACHE_MAX_BYTES, ART_CACHE_SIZE, DOMAIN, ENTITY_FEATURES, LEGACY_FEATURES
+from .const import (
+    ART_CACHE_MAX_BYTES,
+    ART_CACHE_SIZE,
+    DOMAIN,
+    ENTITY_FEATURES,
+    EVENT_CUE,
+    FEATURE_EVENTS,
+    LEGACY_FEATURES,
+    STREAM_RETRY_AFTER,
+    STREAMING_SCAN_INTERVAL,
+)
+from .events import transitions
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,7 +150,118 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         # Couch-card art by (kind, ratingKey), fetched on first request for
         # an item and kept (LRU): never per poll.
         self._art_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
+        # Push (Cue 1.2.1): the `/v1/events` stream, while one is open.
+        self.scan_interval = timedelta(seconds=scan_interval)
+        self.streaming = False
+        self._stream_task: asyncio.Task[None] | None = None
+        self._stream_retry_at = 0.0
+        # The snapshot playback events were last worked out from.
+        self._event_baseline: CueData | None = None
+        self._event_listeners: list[Callable[[str, dict[str, Any]], None]] = []
         self._art_inflight: dict[tuple[str, str], asyncio.Future[tuple[bytes, str] | None]] = {}
+
+    # MARK: playback events
+
+    @callback
+    def async_add_event_listener(self, listener: Callable[[str, dict[str, Any]], None]) -> CALLBACK_TYPE:
+        """Called with `(type, data)` for each playback event."""
+        self._event_listeners.append(listener)
+
+        @callback
+        def remove() -> None:
+            self._event_listeners.remove(listener)
+
+        return remove
+
+    @callback
+    def async_update_listeners(self) -> None:
+        """Every new snapshot, pushed or polled: work out the playback
+        events, fire them, then update the entities."""
+        new = self.data
+        if new is not None and new is not self._event_baseline:
+            found = transitions(self._event_baseline, new)
+            self._event_baseline = new
+            for kind, data in found:
+                self._fire(kind, data)
+        super().async_update_listeners()
+        self._maybe_start_stream()
+
+    def _fire(self, kind: str, data: dict[str, Any]) -> None:
+        device = dr.async_get(self.hass).async_get_device(
+            identifiers={(DOMAIN, self.config_entry.unique_id or self.config_entry.entry_id)}
+        )
+        self.hass.bus.async_fire(
+            EVENT_CUE,
+            {"device_id": device.id if device else None, "entry_id": self.config_entry.entry_id, "type": kind, **data},
+        )
+        for listener in list(self._event_listeners):
+            listener(kind, data)
+
+    # MARK: push (`/v1/events`)
+
+    @callback
+    def _maybe_start_stream(self) -> None:
+        if (
+            self._stream_task is not None
+            or self.auth_failed
+            or not self.has(FEATURE_EVENTS)
+            or not (self.data and self.data.reachable)
+            or _now() < max(self._stream_retry_at, self._blocked_until)
+        ):
+            return
+        self._stream_task = self.config_entry.async_create_background_task(
+            self.hass, self._async_follow_stream(), f"{DOMAIN} events {self.client.host}"
+        )
+
+    async def _async_follow_stream(self) -> None:
+        """Apply the stream until it ends, then go back to polling."""
+        try:
+            async for event, data in self.client.events():
+                if not self.streaming:
+                    self.streaming = True
+                    self.update_interval = timedelta(seconds=STREAMING_SCAN_INTERVAL)
+                    _LOGGER.debug("Following Cue's event stream")
+                self._apply_event(event, data)
+        except CueAuthError:
+            self.auth_failed = True
+            self.config_entry.async_start_reauth(self.hass)
+        except CueRateLimitedError as err:
+            self._block(err.retry_after)
+        except CueResponseError as err:
+            _LOGGER.debug("Cue refused the event stream: %s", err)
+            self._stream_retry_at = _now() + STREAM_RETRY_AFTER
+        except CueConnectionError as err:
+            _LOGGER.debug("Cue's event stream ended: %s", err)
+        finally:
+            was_streaming = self.streaming
+            self.streaming = False
+            self._stream_task = None
+            self.update_interval = self.scan_interval
+            if not was_streaming and not self._stream_retry_at > _now():
+                # Opened and closed without a frame: don't spin on it.
+                self._stream_retry_at = _now() + self.scan_interval.total_seconds()
+        if not self.auth_failed:
+            # Usually Cue left the foreground: find out at once.
+            await self.async_request_refresh()
+
+    def _apply_event(self, event: str, data: dict[str, Any]) -> None:
+        current = self.data.status if self.data and self.data.reachable else None
+        if event == "status":
+            status = data
+        elif event == "position" and current and isinstance(current.get("player"), dict):
+            status = copy.deepcopy(current)
+            status["player"].update(
+                {k: data[k] for k in ("positionMs", "positionAt", "rate", "state") if k in data}
+            )
+        elif event == "app" and current:
+            status = copy.deepcopy(current)
+            status.setdefault("app", {}).update(foreground=bool(data.get("foreground")))
+        elif event == "open" and current:
+            status = {**current, "lastOpen": data}
+        else:
+            return  # marker: the status before it already says so
+        self._generation += 1
+        self.async_set_updated_data(CueData(reachable=True, status=status))
 
     def has(self, feature: str) -> bool:
         """Whether this build serves the v1 route `feature` (`stop`, …)."""

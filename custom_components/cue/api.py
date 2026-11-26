@@ -12,13 +12,13 @@ other client on the same host (Ben's rest_commands) out for 5 minutes.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 from urllib.parse import quote, urlencode
 
 import aiohttp
 
-from .const import DEFAULT_RETRY_AFTER, LIBRARY_TIMEOUT, REQUEST_TIMEOUT
+from .const import DEFAULT_RETRY_AFTER, EVENTS_READ_TIMEOUT, LIBRARY_TIMEOUT, REQUEST_TIMEOUT
 
 
 class CueError(Exception):
@@ -119,6 +119,49 @@ class CueClient:
         """`POST /v1/open` (Cue 1.2.1): 202 `{requestId}`; the outcome is
         `status.lastOpen`."""
         return await self._json("POST", "/v1/open", body=body, ok=(202,), timeout=LIBRARY_TIMEOUT)
+
+    async def events(self) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+        """`GET /v1/events` (Cue 1.2.1): `(event, data)` until the stream
+        ends. Comments (keepalives) are skipped; a frame whose data isn't a
+        JSON object is dropped. Raises like any request on a refusal; a
+        stream that goes quiet past two keepalives raises
+        CueConnectionError."""
+        headers = {"Accept": "text/event-stream"}
+        if not self._token:
+            raise CueAuthError(401, "unauthorized", "No token configured")
+        headers["Authorization"] = f"Bearer {self._token}"
+        try:
+            async with self._session.get(
+                self.base_url + "/v1/events",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=None, connect=REQUEST_TIMEOUT, sock_read=EVENTS_READ_TIMEOUT),
+                allow_redirects=False,
+            ) as resp:
+                if resp.status != 200:
+                    raise _error_for(resp.status, resp.headers, await resp.read())
+                event, data = "message", []
+                async for raw in resp.content:
+                    line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    if not line:
+                        if data:
+                            try:
+                                payload = json.loads("\n".join(data))
+                            except ValueError:
+                                payload = None
+                            if isinstance(payload, dict):
+                                yield event, payload
+                        event, data = "message", []
+                    elif line.startswith(":"):
+                        continue
+                    else:
+                        name, _, value = line.partition(":")
+                        value = value[1:] if value.startswith(" ") else value
+                        if name == "event":
+                            event = value
+                        elif name == "data":
+                            data.append(value)
+        except (TimeoutError, aiohttp.ClientError, OSError) as err:
+            raise CueConnectionError(f"Cue's event stream ended: {err!r}") from err
 
     async def get_artwork(self, path: str) -> tuple[bytes, str]:
         """Fetch an artwork path from status (`/v1/artwork/still?key=…`)."""

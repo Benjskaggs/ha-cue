@@ -79,6 +79,17 @@ EVENT_TYPES: Final = (
     "intro_started", "credits_started", "foreground_lost",
 )
 
+# Slice G (Cue 1.2.1): people.
+FEATURE_CAST: Final = "cast"
+FEATURE_ON_SCREEN: Final = "onstageNow"
+FEATURE_CREDITS: Final = "personCredits"
+FEATURE_HEADSHOT: Final = "castHeadshot"
+# The image proxy's content type for a headshot (id = actorKey).
+HEADSHOT_CONTENT_TYPE: Final = "cue_headshot"
+# Onstage looks a moment after a pause: how long cue.on_screen waits for it.
+ON_SCREEN_WAIT: Final = 4.0
+ON_SCREEN_POLL: Final = 0.5
+
 # media_content_id values for the browse tree.
 BROWSE_ROOT: Final = "cue_root"
 BROWSE_CONTINUE: Final = "cue_continue"

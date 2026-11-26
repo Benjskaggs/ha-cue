@@ -51,6 +51,13 @@ E_ROUTES = ["events"]
 # `enable_pairing()` (with it, the config flow offers a menu).
 F_ROUTES = ["pair", "pairConfirm", "revokeSelf"]
 PAIR_CODE = "482913"
+# Slice G (1.2.1): people.
+G_ROUTES = ["cast", "castHeadshot", "onstageNow", "personCredits"]
+CAST = [
+    {"actorKey": "ellen", "name": "Ellen Pompeo", "role": "Meredith Grey", "headshot": "/v1/cast/ellen/headshot"},
+    {"actorKey": "Sandra Oh", "name": "Sandra Oh", "role": "Cristina Yang", "headshot": "/v1/cast/Sandra%20Oh/headshot"},
+    {"actorKey": "noface", "name": "Chandra Wilson", "role": "Miranda Bailey"},
+]
 ACCENT = "#E0A030"
 
 
@@ -66,7 +73,7 @@ def png_with_alpha(rating_key: str) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw))
             + chunk(b"IEND", b""))
 INFO = {"api": 1, "id": DEVICE_ID, "name": "Living Room", "app": APP, "pairing": False,
-        "features": FEATURES + C_ROUTES + D_ROUTES + ART_FEATURES + C_CAPABILITIES}
+        "features": FEATURES + C_ROUTES + D_ROUTES + G_ROUTES + ART_FEATURES + C_CAPABILITIES}
 
 # The fake's Plex library (openapi `MediaItem`s).
 SHOW = {"ratingKey": "100", "type": "show", "title": "Grey's Anatomy", "year": 2005, "server": SERVER_ID}
@@ -201,6 +208,11 @@ class FakeCue:
         self.paired_tokens: set[str] = set()
         self.pairing: dict[str, Any] | None = None
         self.pair_starts = 0
+        # Slice G: a refusal /v1/onstage/now answers (status, code, message),
+        # else these people; `analyzing_polls` answers analyzing first.
+        self.on_screen_refusal: tuple[int, str, str] | None = None
+        self.on_screen: list[dict[str, Any]] = [CAST[1]]
+        self.analyzing_polls = 0
         # Called inside an artwork request, before it answers (tests use it
         # to change the item mid-fetch).
         self.on_artwork: Callable[[], None] | None = None
@@ -251,7 +263,11 @@ class FakeCue:
 
     def before_slice_c(self) -> None:
         """A 1.2 build: art, but nothing from 1.2.1."""
-        self.drop_features(C_FEATURES + D_ROUTES)
+        self.drop_features(C_FEATURES + D_ROUTES + G_ROUTES)
+
+    def before_slice_g(self) -> None:
+        """A 1.2.1 build before slice G: no people routes."""
+        self.drop_features(G_ROUTES)
 
     def enable_pairing(self) -> None:
         self.info["pairing"] = True
@@ -293,7 +309,7 @@ class FakeCue:
         """A Slice B build from before the couch-card art (and so before
         everything after it)."""
         self.art = False
-        self.drop_features(ART_FEATURES + C_FEATURES + D_ROUTES)
+        self.drop_features(ART_FEATURES + C_FEATURES + D_ROUTES + G_ROUTES)
         if self.player:
             self.player.pop("colors", None)
             self.player["artwork"].pop("logo", None)
@@ -331,7 +347,44 @@ class FakeCue:
         app.router.add_post("/v1/pair", self._pair)
         app.router.add_post("/v1/pair/{pairingId}", self._pair_confirm)
         app.router.add_delete("/v1/clients/self", self._revoke_self)
+        app.router.add_get("/v1/cast", self._cast)
+        app.router.add_get("/v1/cast/{actorKey}/headshot", self._headshot)
+        app.router.add_get("/v1/onstage/now", self._on_screen)
+        app.router.add_get("/v1/people/{key}/credits", self._credits)
         return app
+
+    # MARK: people (slice G)
+
+    async def _cast(self, request: web.Request) -> web.Response:
+        if not self.player:
+            return _error(409, "nothing_playing", "Nothing is playing.")
+        return web.json_response({"ratingKey": self.player["item"]["ratingKey"], "people": copy.deepcopy(CAST)})
+
+    async def _headshot(self, request: web.Request) -> web.Response:
+        key = request.match_info["actorKey"]
+        if not self.player or not any(p["actorKey"] == key and p.get("headshot") for p in CAST):
+            return _error(404, "not_found", "No headshot for that person in what's playing.")
+        return web.Response(body=JPEG + key.encode(), content_type="image/jpeg")
+
+    async def _on_screen(self, request: web.Request) -> web.Response:
+        if self.on_screen_refusal:
+            status, code, message = self.on_screen_refusal
+            return _error(status, code, message)
+        if not self.player:
+            return _error(409, "nothing_playing", "Nothing is playing.")
+        if self.player["state"] != "paused":
+            return _error(409, "unsupported", "Onstage only looks while playback is paused. Pause first.")
+        key = self.player["item"]["ratingKey"]
+        if self.analyzing_polls > 0:
+            self.analyzing_polls -= 1
+            return web.json_response({"ratingKey": key, "people": [], "analyzing": True})
+        return web.json_response({"ratingKey": key, "people": copy.deepcopy(self.on_screen), "analyzing": False})
+
+    async def _credits(self, request: web.Request) -> web.Response:
+        key = request.match_info["key"]
+        name = next((p["name"] for p in CAST if p["actorKey"] == key), key)
+        items = [copy.deepcopy(EPISODE), copy.deepcopy(SHOW)] if name == "Sandra Oh" else []
+        return web.json_response({"name": name, "items": items})
 
     # MARK: pairing (slice F)
 

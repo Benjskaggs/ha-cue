@@ -15,7 +15,8 @@ info:
       /48 or longer). Never port-forward it.
     - **Discovery:** Bonjour `_cue-control._tcp`, instance name = the Apple
       TV's name, TXT `v=1`, `api=1`, `port=7788`, `id=<GET /v1/info id>`,
-      `name=<Apple TV name>`, `app=<Cue version>`. Nothing about auth state.
+      `name=<Apple TV name>`, `app=<Cue version>`, and from 1.2.1 `pair=1`
+      (pairing works). Nothing about auth state.
     - **Cue must be open.** tvOS suspends Cue soon after it leaves the
       foreground; a refused connection means "Cue isn't open".
     - **One request per connection**; the server closes after each reply
@@ -67,6 +68,13 @@ tags:
     description: Push (1.2.1). One long-lived stream instead of polling.
   - name: pairing
     description: Getting a token (1.2.1). Unauthenticated; works only while Home Assistant Control is on and Cue is on screen.
+  - name: people
+    description: |
+      Who's in it and who's on screen (1.2.1). The cast is Plex's billing,
+      always available. Who's on screen comes from Onstage (face recognition
+      on the TV) and has its own default-off switch. No face data ever leaves
+      the TV (no pictures of faces, rects or embeddings), and no Plex URL:
+      headshots come through `/v1/cast/{actorKey}/headshot`.
   - name: legacy
     description: |
       The 1.0 interface, frozen. Parameters may come from the query string or
@@ -98,7 +106,7 @@ paths:
                 pairing: true
                 features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip,
                            stop, previous, subtitleOffset, search, open, continueWatching, events,
-                           pair, pairConfirm, revokeSelf,
+                           pair, pairConfirm, revokeSelf, cast, castHeadshot, onstageNow, personCredits,
                            artwork.logo, artwork.square, colors, subtitles.language, subtitles.enabled, audio.language, status.app]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -682,6 +690,104 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Error" }
 
+  /v1/cast:
+    get:
+      tags: [people]
+      operationId: cast
+      summary: The playing item's billed cast (1.2.1).
+      responses:
+        "200":
+          description: Billing order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ratingKey, people]
+                properties:
+                  ratingKey: { type: string }
+                  people: { type: array, items: { $ref: "#/components/schemas/Person" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/cast/{actorKey}/headshot:
+    get:
+      tags: [people]
+      operationId: castHeadshot
+      summary: A cast member's Plex headshot, fetched by Cue (1.2.1).
+      description: Only for people in what's playing (404 otherwise). The bytes come through Cue; the Plex address and token never leave the TV.
+      parameters:
+        - { name: actorKey, in: path, required: true, schema: { type: string }, description: Percent-encoded. }
+      responses:
+        "200":
+          description: The image.
+          content:
+            image/jpeg: { schema: { type: string, format: binary } }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/Error" }
+
+  /v1/onstage/now:
+    get:
+      tags: [people]
+      operationId: onstageNow
+      summary: Who Onstage recognised in the paused frame (1.2.1).
+      description: |
+        Answers only when **all** of these hold, else the error in brackets:
+        "Share Who's on Screen" is on in Cue's Settings › Connection (409
+        `consent_required`); Onstage is on and allowed here, which can only be
+        set on the TV (409 `consent_required`); something is playing (409
+        `nothing_playing`); it's paused (409 `unsupported`). Onstage looks a
+        moment after a pause: `analyzing: true` means ask again shortly, and
+        an empty `people` means nobody was recognised. Names, roles and keys
+        only.
+      responses:
+        "200":
+          description: The people.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ratingKey, people, analyzing]
+                properties:
+                  ratingKey: { type: string }
+                  people: { type: array, items: { $ref: "#/components/schemas/Person" } }
+                  analyzing: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/people/{key}/credits:
+    get:
+      tags: [people]
+      operationId: personCredits
+      summary: What else someone's in, in this Plex library (1.2.1).
+      description: "`key` is an `actorKey` from cast or on-screen (or a name). Titles on the connected server only."
+      parameters:
+        - { name: key, in: path, required: true, schema: { type: string, maxLength: 200 }, description: Percent-encoded. }
+      responses:
+        "200":
+          description: The titles.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, items]
+                properties:
+                  name: { type: string }
+                  items: { type: array, items: { $ref: "#/components/schemas/MediaItem" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+
   # --- legacy (frozen 1.0 interface) ---------------------------------------
 
   /status:
@@ -849,7 +955,8 @@ components:
             `play`, `pause`, `toggle`, `restart`, `next`, `seek`, `rate`,
             `subtitles`, `audio`, `skip`; 1.2.1 adds `stop`, `previous`,
             `subtitleOffset`, `search`, `open`, `continueWatching`, `events`,
-            `pair`, `pairConfirm`, `revokeSelf`). Feature-detect on these rather than on the
+            `pair`, `pairConfirm`, `revokeSelf`, `cast`, `castHeadshot`,
+            `onstageNow`, `personCredits`). Feature-detect on these rather than on the
             version. Absent on builds before Slice B, which serve
             `info` … `skip`. Names are only ever added. After the route names
             come capabilities: `artwork.logo`, `artwork.square` and `colors`
@@ -912,6 +1019,7 @@ components:
           properties:
             enabled: { type: boolean }
             available: { type: boolean, description: "false when on-TV consent was never answered or the region gate blocks it." }
+            shared: { type: boolean, description: "1.2.1. \"Share Who's on Screen with Home Assistant\": whether `/v1/onstage/now` answers." }
 
     Player:
       type: object
@@ -990,6 +1098,16 @@ components:
         offsetMs:
           type: integer
           description: "1.2.1, subtitles only. The viewer's subtitle delay in ms (positive = later), as the timing menu shows it."
+
+    Person:
+      type: object
+      description: A person (1.2.1). Never face data, never a Plex URL.
+      required: [actorKey, name]
+      properties:
+        actorKey: { type: string, description: "Plex's key for the person (often the name). Pass it to the headshot and credits routes." }
+        name: { type: string }
+        role: { type: string, description: The character. }
+        headshot: { type: string, description: "`/v1/cast/{actorKey}/headshot` on this server, when there's a picture." }
 
     MediaItem:
       type: object

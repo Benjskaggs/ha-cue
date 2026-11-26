@@ -65,10 +65,16 @@ from .const import (
     CONF_APPLE_TV_ENTITY,
     DOMAIN,
     FEATURE_COLORS,
+    FEATURE_CAST,
     FEATURE_CONTINUE,
+    FEATURE_CREDITS,
+    FEATURE_HEADSHOT,
+    FEATURE_ON_SCREEN,
     FEATURE_OPEN,
     FEATURE_SEARCH,
+    HEADSHOT_CONTENT_TYPE,
 )
+from . import const as cue_const
 from . import library
 from .coordinator import CueConfigEntry, CueCoordinator
 from .entity import CueEntity
@@ -123,6 +129,10 @@ SERVICE_SET_RATE = "set_rate"
 SERVICE_SKIP = "skip"
 SERVICE_SEARCH = "search"
 SERVICE_CONTINUE_WATCHING = "continue_watching"
+SERVICE_CAST = "cast"
+SERVICE_ON_SCREEN = "on_screen"
+SERVICE_FILMOGRAPHY = "filmography"
+ATTR_PERSON = "person"
 ATTR_QUERY = "query"
 ATTR_TYPE = "type"
 ATTR_LIMIT = "limit"
@@ -193,6 +203,14 @@ SERVICES: tuple[tuple[str, dict[Any, Any], str, SupportsResponse], ...] = (
         SupportsResponse.ONLY,
     ),
     (SERVICE_CONTINUE_WATCHING, {}, "async_service_continue_watching", SupportsResponse.ONLY),
+    (SERVICE_CAST, {}, "async_service_cast", SupportsResponse.ONLY),
+    (SERVICE_ON_SCREEN, {}, "async_service_on_screen", SupportsResponse.ONLY),
+    (
+        SERVICE_FILMOGRAPHY,
+        {vol.Required(ATTR_PERSON): vol.All(cv.string, vol.Length(min=1, max=200))},
+        "async_service_filmography",
+        SupportsResponse.ONLY,
+    ),
 )
 
 HAS_PLATFORM_SERVICE_HELPER = hasattr(ha_service, "async_register_platform_entity_service")
@@ -440,6 +458,12 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
     ) -> tuple[bytes | None, str | None]:
         """HA's image proxy for the `entity_picture_*` URLs: Cue's
         `/v1/artwork/<kind>`, with the token, from the per-item cache."""
+        if media_content_type == HEADSHOT_CONTENT_TYPE:
+            if not self.coordinator.has(FEATURE_HEADSHOT):
+                return None, None
+            path = f"/v1/cast/{quote(media_content_id, safe='')}/headshot"
+            result = await self.coordinator.async_get_artwork(path)
+            return result if result is not None else (None, None)
         if not media_content_type.startswith(ART_CONTENT_PREFIX):
             return None, None
         kind = media_content_type[len(ART_CONTENT_PREFIX):]
@@ -749,6 +773,52 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
         Each result carries the `media_content_id` for `play_media`."""
         items = await self._async_search(query, type, limit)
         return {"query": query, "results": library.with_ids(items)}
+
+    def _people(self, people: Any) -> list[dict[str, Any]]:
+        """Cue's people, the headshot path swapped for HA's proxy URL."""
+        out = []
+        for person in people or []:
+            if not isinstance(person, dict) or not person.get("name"):
+                continue
+            entry = {k: person[k] for k in ("name", "role", "actorKey") if person.get(k) is not None}
+            if person.get("headshot") and person.get("actorKey"):
+                entry["picture"] = self.get_browse_image_url(HEADSHOT_CONTENT_TYPE, str(person["actorKey"]))
+            out.append(entry)
+        return out
+
+    async def async_service_cast(self) -> ServiceResponse:
+        """`cue.cast`: the playing item's billed cast (Plex metadata, no
+        face recognition)."""
+        self._require(FEATURE_CAST)
+        client = self.coordinator.client
+        reply = await self.coordinator.async_library("cast", client.get_cast)
+        return {"rating_key": reply.get("ratingKey"), "people": self._people(reply.get("people"))}
+
+    async def async_service_on_screen(self) -> ServiceResponse:
+        """`cue.on_screen`: who Onstage recognised in the paused frame. Only
+        with Cue's "Share Who's on Screen" switch on, Onstage on, and
+        playback paused; waits a few seconds while Onstage is still looking."""
+        self._require(FEATURE_ON_SCREEN)
+        client = self.coordinator.client
+        deadline = time.monotonic() + cue_const.ON_SCREEN_WAIT
+        while True:
+            reply = await self.coordinator.async_library("on_screen", client.get_on_screen)
+            if not reply.get("analyzing") or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(cue_const.ON_SCREEN_POLL)
+        return {
+            "rating_key": reply.get("ratingKey"),
+            "people": self._people(reply.get("people")),
+            "analyzing": bool(reply.get("analyzing")),
+        }
+
+    async def async_service_filmography(self, person: str) -> ServiceResponse:
+        """`cue.filmography`: what else `person` (a name, or an actorKey from
+        cue.cast / cue.on_screen) is in, in Cue's Plex library."""
+        self._require(FEATURE_CREDITS)
+        client = self.coordinator.client
+        reply = await self.coordinator.async_library("filmography", lambda: client.get_credits(person))
+        return {"name": reply.get("name") or person, "items": library.with_ids(reply.get("items") or [])}
 
     async def async_service_continue_watching(self) -> ServiceResponse:
         """`cue.continue_watching`: Cue Home's Continue Watching row."""

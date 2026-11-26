@@ -115,3 +115,27 @@ continue_watching:
     entity:
       integration: cue
       domain: media_player
+
+cast:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+
+on_screen:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+
+filmography:
+  target:
+    entity:
+      integration: cue
+      domain: media_player
+  fields:
+    person:
+      required: true
+      example: "Ellen Pompeo"
+      selector:
+        text:

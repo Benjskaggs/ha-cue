@@ -218,6 +218,12 @@
     },
     "not_found": {
       "message": "Cue couldn't find that: {message}"
+    },
+    "consent_required": {
+      "message": "Cue won't say who's on screen: {message}"
+    },
+    "unsupported": {
+      "message": "Cue can't do that right now: {message}"
     }
   },
   "issues": {
@@ -320,6 +326,24 @@
     "continue_watching": {
       "name": "Continue Watching",
       "description": "Cue Home's Continue Watching row: what's part-watched or next up, each with the media_content_id to pass to media_player.play_media."
+    },
+    "cast": {
+      "name": "Cast",
+      "description": "The cast of what's playing, in billing order: name, character and key. From Plex's metadata, no face recognition."
+    },
+    "on_screen": {
+      "name": "Who's on screen",
+      "description": "Who Cue's Onstage recognised in the paused picture: names and characters only. Needs Onstage on (set on the TV), Cue's \"Share Who's on Screen\" switch on, and playback paused."
+    },
+    "filmography": {
+      "name": "Filmography",
+      "description": "What else someone is in, in Cue's Plex library. Each title has the media_content_id to pass to media_player.play_media.",
+      "fields": {
+        "person": {
+          "name": "Person",
+          "description": "A name, or the actorKey from Cast or Who's on screen."
+        }
+      }
     }
   },
   "device_automation": {

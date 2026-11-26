@@ -55,6 +55,8 @@ ERROR_CODE_KEYS = {
     "no_previous": "no_previous",
     "signed_out": "signed_out",
     "not_found": "not_found",
+    "consent_required": "consent_required",
+    "unsupported": "unsupported",
 }
 
 

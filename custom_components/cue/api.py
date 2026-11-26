@@ -180,9 +180,22 @@ class CueClient:
         except (TimeoutError, aiohttp.ClientError, OSError) as err:
             raise CueConnectionError(f"Cue's event stream ended: {err!r}") from err
 
+    async def get_cast(self) -> dict[str, Any]:
+        """`GET /v1/cast` (Cue 1.2.1)."""
+        return await self._json("GET", "/v1/cast")
+
+    async def get_on_screen(self) -> dict[str, Any]:
+        """`GET /v1/onstage/now` (Cue 1.2.1)."""
+        return await self._json("GET", "/v1/onstage/now")
+
+    async def get_credits(self, key: str) -> dict[str, Any]:
+        """`GET /v1/people/{key}/credits` (Cue 1.2.1)."""
+        return await self._json("GET", f"/v1/people/{quote(key, safe='')}/credits", timeout=LIBRARY_TIMEOUT)
+
     async def get_artwork(self, path: str) -> tuple[bytes, str]:
-        """Fetch an artwork path from status (`/v1/artwork/still?key=…`)."""
-        if not path.startswith("/v1/artwork/"):
+        """Fetch an artwork path from status (`/v1/artwork/still?key=…`), or
+        a headshot (`/v1/cast/{key}/headshot`)."""
+        if not (path.startswith("/v1/artwork/") or (path.startswith("/v1/cast/") and path.endswith("/headshot"))):
             raise CueError(f"Not an artwork path: {path}")
         status, headers, body = await self._request("GET", path)
         if status != 200:

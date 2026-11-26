@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.const import CONF_HOST, CONF_PORT, CONF_SCAN_INTERVAL, CONF_TOKEN, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
-from .api import CueClient
-from .const import DEFAULT_PORT, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .api import CueClient, CueError
+from .const import CONF_PAIRED, DEFAULT_PORT, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .coordinator import CueConfigEntry, CueCoordinator
 from .issues import async_delete_issues, async_sync_outdated_issue
 from .media_player import async_register_services
 from .migration import async_adopt_device_id, async_migrate_registries
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
@@ -74,8 +78,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: CueConfigEntry) -> bool
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: CueConfigEntry) -> None:
-    """Drop this entry's repair issue."""
+    """Drop this entry's repair issue, and revoke a paired token on the TV
+    (best effort: Cue may not be open; Settings › Connection can revoke it
+    too). A typed token is shared with scripts, so it's left alone."""
     async_delete_issues(hass, entry)
+    if not entry.data.get(CONF_PAIRED):
+        return
+    client = CueClient(
+        async_get_clientsession(hass),
+        entry.data[CONF_HOST],
+        entry.data.get(CONF_PORT, DEFAULT_PORT),
+        entry.data.get(CONF_TOKEN),
+    )
+    try:
+        await client.revoke_self()
+    except CueError as err:
+        _LOGGER.debug("Couldn't revoke the paired token on the Apple TV: %s", err)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: CueConfigEntry) -> None:

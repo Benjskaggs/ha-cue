@@ -64,6 +64,7 @@ def make_entry(
     token: str = TOKEN,
     options: dict[str, Any] | None = None,
     unique_id: str | None = None,
+    data: dict[str, Any] | None = None,
 ) -> MockConfigEntry:
     """A config entry pointing at the fake. Keyed on the host by default, as
     Slice A made them (setup then adopts the fake's stable id)."""
@@ -76,6 +77,7 @@ def make_entry(
             CONF_PORT: fake.port,
             CONF_TOKEN: token,
             CONF_NAME: "Living Room",
+            **(data or {}),
         },
         options=options or {},
     )

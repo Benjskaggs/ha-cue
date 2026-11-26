@@ -12,6 +12,11 @@ DEFAULT_NAME: Final = "Apple TV"
 
 # Entry data (beside host, port, token, name)
 CONF_APP_VERSION: Final = "app_version"
+# True when the token came from pairing (Cue 1.2.1): removing the entry
+# then revokes it on the TV. A typed token is shared with scripts: never.
+CONF_PAIRED: Final = "paired"
+# What the TV and Cue's Settings call this controller.
+PAIRING_CLIENT_NAME: Final = "Home Assistant"
 
 # Options
 CONF_APPLE_TV_ENTITY: Final = "apple_tv_entity"

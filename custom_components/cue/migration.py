@@ -60,6 +60,10 @@ def async_migrate_registries(hass: HomeAssistant, entry: CueConfigEntry) -> None
         ent_reg.async_update_entity(reg_entry.entity_id, new_unique_id=new_unique_id)
 
     dev_reg = dr.async_get(hass)
-    if device := dev_reg.async_get_device(identifiers={(DOMAIN, old_base)}):
+    device = next(
+        (d for d in dr.async_entries_for_config_entry(dev_reg, entry.entry_id) if (DOMAIN, old_base) in d.identifiers),
+        None,
+    )
+    if device:
         dev_reg.async_update_device(device.id, new_identifiers={(DOMAIN, new_base)})
     _LOGGER.info("Cue: moved %s from %s to its stable id %s", entry.title, old_base, new_base)

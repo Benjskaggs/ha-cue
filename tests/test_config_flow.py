@@ -45,6 +45,7 @@ async def test_full_flow(hass: HomeAssistant, fake_cue: FakeCue) -> None:
         CONF_TOKEN: TOKEN.lower(),
         CONF_NAME: "Living Room",
         "app_version": "1.2",
+        "paired": False,
     }
     # A Slice B build: keyed on its stable id, not the host.
     assert result["result"].unique_id == DEVICE_ID

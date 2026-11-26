@@ -52,6 +52,10 @@ async def events(hass: HomeAssistant) -> list[Event]:
     return async_capture_events(hass, EVENT_CUE)
 
 
+def _device(hass: HomeAssistant) -> dr.DeviceEntry:
+    return next(d for d in dr.async_get(hass).devices.values() if (DOMAIN, DEVICE_ID) in d.identifiers)
+
+
 def _types(events: list[Event]) -> list[str]:
     return [e.data["type"] for e in events]
 
@@ -69,7 +73,7 @@ async def test_stream_drives_state(hass: HomeAssistant, fake_cue: FakeCue, event
     await _until(lambda: hass.states.get(PLAYER).state == "paused")
     assert fake_cue.count("/v1/status") == polls
     await _until(lambda: _types(events) == ["paused"])
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, DEVICE_ID)})
+    device = _device(hass)
     assert events[0].data["device_id"] == device.id
     assert events[0].data["series"] == "Grey's Anatomy" and events[0].data["rating_key"] == "12345"
     state = hass.states.get(EVENT_ENTITY)
@@ -180,7 +184,7 @@ async def test_polling_works_out_the_same_events(
 async def test_device_triggers(hass: HomeAssistant, fake_cue: FakeCue) -> None:
     fake_cue.play()
     entry = await _streaming(hass, fake_cue)
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, DEVICE_ID)})
+    device = _device(hass)
     triggers = await async_get_device_automations(hass, DeviceAutomationType.TRIGGER, device.id)
     assert {t["type"] for t in triggers if t["domain"] == DOMAIN} == set(EVENT_TYPES)
 

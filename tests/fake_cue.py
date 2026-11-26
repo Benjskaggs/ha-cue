@@ -47,6 +47,10 @@ D_ROUTES = ["search", "open", "continueWatching"]
 # Slice E (1.2.1): push. Off in the fake unless a test calls
 # `enable_events()`: a stream outlives a test that doesn't expect one.
 E_ROUTES = ["events"]
+# Slice F (1.2.1): pairing. Off in the fake unless a test calls
+# `enable_pairing()` (with it, the config flow offers a menu).
+F_ROUTES = ["pair", "pairConfirm", "revokeSelf"]
+PAIR_CODE = "482913"
 ACCENT = "#E0A030"
 
 
@@ -193,6 +197,10 @@ class FakeCue:
         # Slice E: one queue per open event stream (None ends it).
         self._streams: list[asyncio.Queue[bytes | None]] = []
         self.refuse_streams: tuple[int, str] | None = None
+        # Slice F: tokens Cue accepts beside `token`, and the live pairing.
+        self.paired_tokens: set[str] = set()
+        self.pairing: dict[str, Any] | None = None
+        self.pair_starts = 0
         # Called inside an artwork request, before it answers (tests use it
         # to change the item mid-fetch).
         self.on_artwork: Callable[[], None] | None = None
@@ -244,6 +252,11 @@ class FakeCue:
     def before_slice_c(self) -> None:
         """A 1.2 build: art, but nothing from 1.2.1."""
         self.drop_features(C_FEATURES + D_ROUTES)
+
+    def enable_pairing(self) -> None:
+        self.info["pairing"] = True
+        if "features" in self.info:
+            self.info["features"] += [f for f in F_ROUTES if f not in self.info["features"]]
 
     def enable_events(self) -> None:
         if "features" in self.info and "events" not in self.info["features"]:
@@ -315,7 +328,46 @@ class FakeCue:
         app.router.add_get("/v1/hubs/continue", self._continue)
         app.router.add_post("/v1/open", self._open)
         app.router.add_get("/v1/events", self._events)
+        app.router.add_post("/v1/pair", self._pair)
+        app.router.add_post("/v1/pair/{pairingId}", self._pair_confirm)
+        app.router.add_delete("/v1/clients/self", self._revoke_self)
         return app
+
+    # MARK: pairing (slice F)
+
+    async def _pair(self, request: web.Request) -> web.Response:
+        if not self.info.get("pairing"):
+            return _error(404, "not_found", "No route /v1/pair.")
+        if self.pairing and self.pairing["live"]:
+            return _error(409, "pairing_pending", "Another pairing is waiting for its code on the TV.")
+        self.pair_starts += 1
+        self.pairing = {"id": f"pair-{self.pair_starts}", "name": request["body"].get("clientName"),
+                        "tries": 3, "live": True}
+        return web.json_response({"pairingId": self.pairing["id"], "expiresInS": 120}, status=202)
+
+    async def _pair_confirm(self, request: web.Request) -> web.Response:
+        p = self.pairing
+        if not p or not p["live"] or p["id"] != request.match_info["pairingId"]:
+            return _error(404, "not_found", "No such pairing; it may have expired.")
+        if str(request["body"].get("code", "")).replace(" ", "") != PAIR_CODE:
+            p["tries"] -= 1
+            if p["tries"] <= 0:
+                p["live"] = False
+                return _error(404, "not_found", "Wrong code too many times.")
+            return web.json_response(
+                {"error": {"code": "invalid_parameter", "message": f"Wrong code. {p['tries']} tries left.",
+                           "status": 400, "param": "code"}}, status=400)
+        p["live"] = False
+        token = f"paired-token-{self.pair_starts}"
+        self.paired_tokens.add(token)
+        return web.json_response({"clientId": f"client-{self.pair_starts}", "token": token})
+
+    async def _revoke_self(self, request: web.Request) -> web.Response:
+        token = request.headers.get("Authorization", "")[7:]
+        self.paired_tokens.discard(token)
+        if _canon(token) == _canon(self.token):
+            self.token = "revoked"
+        return web.Response(status=204)
 
     # MARK: events (slice E)
 
@@ -423,7 +475,9 @@ class FakeCue:
             return _error(503, "disabled", "Home Assistant Control is turned off on this Apple TV.")
         if request.path != "/v1/info":
             auth = request.headers.get("Authorization", "")
-            if not (auth.startswith("Bearer ") and _canon(auth[7:]) == _canon(self.token)):
+            if request.path.startswith("/v1/pair"):
+                return await handler(request)
+            if not (auth.startswith("Bearer ") and (_canon(auth[7:]) == _canon(self.token) or auth[7:] in self.paired_tokens)):
                 self.failed_auth += 1
                 if self.failed_auth >= 10:
                     self.locked_retry_after = 300

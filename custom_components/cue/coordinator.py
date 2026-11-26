@@ -98,6 +98,8 @@ class CueInfo:
     features: frozenset[str]
     # False for builds before Slice B, which send neither `features` nor `id`.
     lists_features: bool
+    # `POST /v1/pair` works (Cue 1.2.1+).
+    pairing: bool = False
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> CueInfo:
@@ -111,6 +113,7 @@ class CueInfo:
             version=app.get("version"),
             features=frozenset(str(f) for f in raw) if listed else LEGACY_FEATURES,
             lists_features=listed,
+            pairing=data.get("pairing") is True,
         )
 
 
@@ -187,8 +190,13 @@ class CueCoordinator(DataUpdateCoordinator[CueData]):
         self._maybe_start_stream()
 
     def _fire(self, kind: str, data: dict[str, Any]) -> None:
-        device = dr.async_get(self.hass).async_get_device(
-            identifiers={(DOMAIN, self.config_entry.unique_id or self.config_entry.entry_id)}
+        # Through the entry, not `async_get_device(identifiers=…)`: that's
+        # deprecated in newer HA, and its replacement isn't in older ones.
+        key = (DOMAIN, self.config_entry.unique_id or self.config_entry.entry_id)
+        device = next(
+            (d for d in dr.async_entries_for_config_entry(dr.async_get(self.hass), self.config_entry.entry_id)
+             if key in d.identifiers),
+            None,
         )
         self.hass.bus.async_fire(
             EVENT_CUE,

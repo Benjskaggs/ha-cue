@@ -21,9 +21,13 @@ info:
     - **One request per connection**; the server closes after each reply
       (except `GET /v1/events`, which stays open).
     - **Auth:** `Authorization: Bearer <token>` on everything except
-      `GET /v1/info`. The token is never accepted in a query string. Generate
-      one in Settings (`K7QM-2XRA-…`; case and dashes don't matter) or type
-      your own.
+      `GET /v1/info` and pairing. The token is never accepted in a query
+      string. Get one by **pairing** (1.2.1: `POST /v1/pair`, then the
+      six-digit code shown on the TV), or make the **token for scripts** in
+      Settings (`K7QM-2XRA-…`; case and dashes don't matter). Cue keeps only
+      SHA-256 hashes, in this Apple TV's Keychain; Settings lists each
+      controller with when it was last seen, and Revoke. A token typed in
+      before 1.2.1 became the token for scripts and keeps working unchanged.
     - **Limits:** 8 KB of headers, 16 KB of body, `Content-Length` only (no
       chunked bodies), 5 s to send the headers, 10 s per request, 16 open
       connections.
@@ -61,6 +65,8 @@ tags:
     description: Search, open and Continue Watching (1.2.1). They answer for the Plex server Cue is connected to; 503 `signed_out` while Cue isn't connected.
   - name: events
     description: Push (1.2.1). One long-lived stream instead of polling.
+  - name: pairing
+    description: Getting a token (1.2.1). Unauthenticated; works only while Home Assistant Control is on and Cue is on screen.
   - name: legacy
     description: |
       The 1.0 interface, frozen. Parameters may come from the query string or
@@ -89,9 +95,10 @@ paths:
                 id: 3f2a5c1e-8b7d-4e6f-9a0b-1c2d3e4f5a6b
                 name: Living Room
                 app: { version: "1.1", build: "2026.1201.800", platform: tvOS }
-                pairing: false
+                pairing: true
                 features: [info, status, artwork, play, pause, toggle, restart, next, seek, rate, subtitles, audio, skip,
                            stop, previous, subtitleOffset, search, open, continueWatching, events,
+                           pair, pairConfirm, revokeSelf,
                            artwork.logo, artwork.square, colors, subtitles.language, subtitles.enabled, audio.language, status.app]
         "403": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -588,6 +595,93 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/Error" }
 
+  /v1/pair:
+    post:
+      tags: [pairing]
+      operationId: pair
+      summary: Ask to pair; the TV shows a six-digit code (1.2.1).
+      description: |
+        The TV shows "<clientName> wants to control Cue" and a code, over
+        whatever is on screen, for 120 s. The person reads it off the TV and
+        types it into the controller, which sends it to
+        `/v1/pair/{pairingId}`. One pairing at a time (409
+        `pairing_pending`), and at most 5 started in 10 minutes.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { clientName: { type: string, maxLength: 60, description: "What the TV and Settings call it. Default `Controller`." } }
+            example: { clientName: Home Assistant }
+      responses:
+        "202":
+          description: The code is on the TV.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pairingId, expiresInS]
+                properties:
+                  pairingId: { type: string }
+                  expiresInS: { type: integer, example: 120 }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/pair/{pairingId}:
+    post:
+      tags: [pairing]
+      operationId: pairConfirm
+      summary: Send the code; get the token (1.2.1).
+      description: |
+        The token is answered once and never again: Cue keeps only its hash.
+        A wrong code is 400 `invalid_parameter` (param `code`) with the tries
+        left; the third wrong code cancels the pairing, and a pairing that's
+        finished, cancelled or past 120 s is 404 `not_found`.
+      security: []
+      parameters:
+        - { name: pairingId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties: { code: { type: string, example: "482913", description: Spaces and dashes are ignored. } }
+      responses:
+        "200":
+          description: Paired.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clientId, token]
+                properties:
+                  clientId: { type: string }
+                  token: { type: string, description: "256 random bits, base64url. Send as `Authorization: Bearer <token>`." }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
+  /v1/clients/self:
+    delete:
+      tags: [pairing]
+      operationId: revokeSelf
+      summary: Revoke the token this request carries (1.2.1).
+      description: For a controller being removed. 204; the token is refused from then on.
+      responses:
+        "204": { description: Revoked. }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/Error" }
+
   # --- legacy (frozen 1.0 interface) ---------------------------------------
 
   /status:
@@ -746,7 +840,7 @@ components:
             on builds before Slice B; key on the host then.
         name: { type: string, description: The Apple TV's name. }
         app: { $ref: "#/components/schemas/AppVersion" }
-        pairing: { type: boolean, description: "false until pairing ships; use a token." }
+        pairing: { type: boolean, description: "true from 1.2.1: `POST /v1/pair` works. false on older builds: use a token." }
         features:
           type: array
           items: { type: string }
@@ -754,7 +848,8 @@ components:
             One name per v1 route this build serves (`info`, `status`, `artwork`,
             `play`, `pause`, `toggle`, `restart`, `next`, `seek`, `rate`,
             `subtitles`, `audio`, `skip`; 1.2.1 adds `stop`, `previous`,
-            `subtitleOffset`, `search`, `open`, `continueWatching`, `events`). Feature-detect on these rather than on the
+            `subtitleOffset`, `search`, `open`, `continueWatching`, `events`,
+            `pair`, `pairConfirm`, `revokeSelf`). Feature-detect on these rather than on the
             version. Absent on builds before Slice B, which serve
             `info` … `skip`. Names are only ever added. After the route names
             come capabilities: `artwork.logo`, `artwork.square` and `colors`

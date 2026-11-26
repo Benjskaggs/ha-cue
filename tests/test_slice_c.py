@@ -116,3 +116,13 @@ async def test_foreground_lost_turns_sensor_off(
     await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get(OPEN).state == STATE_OFF
     assert "screen" not in hass.states.get(OPEN).attributes
+
+
+async def test_stop_mid_hop_is_success(hass: HomeAssistant, fake_cue: FakeCue) -> None:
+    """Live test 2026-11-25: a stop that lands between episodes got 409
+    nothing_playing, which surfaced as a 500. Nothing playing is what stop
+    asks for."""
+    await _start(hass, fake_cue)
+    fake_cue.idle()  # the hop: the old player's gone, the next isn't up yet
+    await hass.services.async_call(MP_DOMAIN, SERVICE_MEDIA_STOP, {ATTR_ENTITY_ID: PLAYER}, blocking=True)
+    assert hass.states.get(PLAYER).state == "idle"

@@ -120,6 +120,23 @@ class CueClient:
         `status.lastOpen`."""
         return await self._json("POST", "/v1/open", body=body, ok=(202,), timeout=LIBRARY_TIMEOUT)
 
+    async def pair_start(self, client_name: str) -> dict[str, Any]:
+        """`POST /v1/pair` (Cue 1.2.1, no token): the TV shows a code.
+        Answers `{pairingId, expiresInS}`."""
+        return await self._json("POST", "/v1/pair", body={"clientName": client_name}, auth=False, ok=(202,))
+
+    async def pair_confirm(self, pairing_id: str, code: str) -> dict[str, Any]:
+        """`POST /v1/pair/{id} {code}`: answers `{clientId, token}`."""
+        return await self._json(
+            "POST", f"/v1/pair/{quote(pairing_id, safe='')}", body={"code": code}, auth=False
+        )
+
+    async def revoke_self(self) -> None:
+        """`DELETE /v1/clients/self`: this token is refused from now on."""
+        status, headers, raw = await self._request("DELETE", "/v1/clients/self")
+        if status != 204:
+            raise _error_for(status, headers, raw)
+
     async def events(self) -> AsyncIterator[tuple[str, dict[str, Any]]]:
         """`GET /v1/events` (Cue 1.2.1): `(event, data)` until the stream
         ends. Comments (keepalives) are skipped; a frame whose data isn't a

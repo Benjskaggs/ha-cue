@@ -15,7 +15,7 @@
       },
       "token": {
         "title": "Token for {name}",
-        "description": "Paste the token from Cue › Settings › Connection › Home Assistant Control (Generate Token). Case and dashes don't matter.",
+        "description": "Paste the token for scripts from Cue › Settings › Connection › Home Assistant Control (or the token you set up before Cue 1.2.1). Case and dashes don't matter.",
         "data": {
           "token": "Token"
         }
@@ -25,6 +25,32 @@
         "description": "Cue refused the saved token, so Home Assistant stopped asking (wrong tokens lock this address out for 5 minutes). Paste the current token from Cue › Settings › Connection.",
         "data": {
           "token": "Token"
+        }
+      },
+      "credentials": {
+        "title": "Connect to {name}",
+        "description": "Pair with a code shown on the TV, or use a token from Cue's Settings.",
+        "menu_options": {
+          "pair": "Pair with a code on the TV",
+          "token": "Use a token"
+        }
+      },
+      "reauth_credentials": {
+        "title": "Reconnect {name}",
+        "description": "Cue refused the saved token, so Home Assistant stopped asking. Pair again with a code on the TV, or paste a token.",
+        "menu_options": {
+          "pair": "Pair with a code on the TV",
+          "reauth_confirm": "Use a token"
+        }
+      },
+      "pair": {
+        "title": "Pair with {name}",
+        "description": "The TV is showing \"Home Assistant wants to control Cue\" and a six-digit code. Type it here. {message}",
+        "data": {
+          "code": "Code"
+        },
+        "data_description": {
+          "code": "The six digits on the TV. The code works for 2 minutes."
         }
       }
     },
@@ -36,7 +62,10 @@
       "signed_out": "Cue is signed out of Plex on this Apple TV.",
       "rate_limited": "Too many wrong tokens from this address. Cue will accept tries again in {retry_after} s.",
       "not_cue": "Something answered at that address, but it isn't Cue's Control API v1.",
-      "unknown": "Unexpected error. Check the logs."
+      "unknown": "Unexpected error. Check the logs.",
+      "wrong_code": "That isn't the code on the TV.",
+      "pairing_expired": "That pairing ran out or was cancelled. A new code is on the TV now.",
+      "pairing_busy": "Another pairing is waiting on the TV (or there were too many tries). Wait a couple of minutes, then submit again."
     },
     "abort": {
       "already_configured": "This Apple TV is already set up.",

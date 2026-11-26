@@ -504,8 +504,15 @@ class CueMediaPlayer(CueEntity, MediaPlayerEntity):
         await self.coordinator.async_command("previous")
 
     async def async_media_stop(self) -> None:
-        """Close the player (builds that list `stop`)."""
-        await self.coordinator.async_command("stop")
+        """Close the player (builds that list `stop`). Nothing playing is
+        what stop asks for: a stop that lands mid-hop between episodes (409
+        `nothing_playing`) is a success, not an error."""
+        try:
+            await self.coordinator.async_command("stop")
+        except HomeAssistantError as err:
+            if getattr(err, "translation_key", None) != "nothing_playing":
+                raise
+            await self.coordinator.async_read_now()
 
     # MARK: cue.* entity services (v0-shaped status responses)
 
